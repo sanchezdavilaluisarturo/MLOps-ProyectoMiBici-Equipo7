@@ -7,4 +7,7 @@
     <orderEntry type="jdk" jdkName="Python 3.11 (MLOps-ProyectoMiBici-Equipo7)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
+  <component name="TemplatesService">
+    <option name="TEMPLATE_CONFIGURATION" value="Jinja2" />
+  </component>
 </module>

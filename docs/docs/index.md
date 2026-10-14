@@ -1,8 +1,8 @@
-# MLOps-ProyectoMiBici-Equipo7 documentation!
+# TC5061_Proyecto_Equipo07 documentation!
 
 ## Description
 
-Proyecto Mi Bici del equipo 7
+A short description of the project.
 
 ## Commands
 
