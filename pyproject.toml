@@ -5,9 +5,9 @@ build-backend = "flit_core.buildapi"
 [project]
 name = "tc5061_proyecto_equipo07"
 version = "0.0.1"
-description = "A short description of the project."
+description = "Proyecto Mi Bici del equipo 7"
 authors = [
-  { name = "TC5061_Proyecto_Equipo07" },
+  { name = "Equipo 7 - MLOps - TC5061" },
 ]
 license = { file = "LICENSE" }
 readme = "README.md"

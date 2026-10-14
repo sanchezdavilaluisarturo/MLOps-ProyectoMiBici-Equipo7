@@ -22,10 +22,10 @@ make requirements        # uv pip install -r requirements.txt
 
 ```bash
 # Ingesta: descarga, normaliza, guarda Parquet y genera el manifiesto
-python -m MLOps-ProyectoMiBici-Equipo7.dataset          # pendiente de implementar
+python -m tc5061_proyecto_equipo07.dataset          # pendiente de implementar
 
 # Experimento base en MLflow (P1, P2, P3)
-python -m MLOps-ProyectoMiBici-Equipo7.modeling.train   # pendiente de implementar
+python -m tc5061_proyecto_equipo07.modeling.train   # pendiente de implementar
 mlflow ui                                                # http://127.0.0.1:5000
 ```
 
@@ -72,7 +72,7 @@ Responder con ML tres preguntas operativas de MiBici, sobre una base reproducibl
 ├── notebooks/         <- Convención FASE.NUMERO-INICIALES-descripcion.ipynb
 ├── references/        <- ML Canvas y diagrama de arquitectura
 ├── reports/figures/   <- Gráficas generadas
-├── MLOps-ProyectoMiBici-Equipo7/   <- Módulo: config.py, dataset.py, features.py, modeling/, plots.py
+├── tc5061_proyecto_equipo07/   <- Módulo: config.py, dataset.py, features.py, modeling/, plots.py
 ├── Makefile
 ├── pyproject.toml
 └── requirements.txt   <- Dependencias con versiones fijadas

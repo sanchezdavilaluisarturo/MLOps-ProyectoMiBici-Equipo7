@@ -1,8 +1,8 @@
-# TC5061_Proyecto_Equipo07 documentation!
+# Equipo 7 - MLOps - TC5061 documentation!
 
 ## Description
 
-A short description of the project.
+Proyecto Mi Bici del equipo 7
 
 ## Commands
 
