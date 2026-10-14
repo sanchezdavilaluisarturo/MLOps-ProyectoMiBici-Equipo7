@@ -4,6 +4,9 @@
 # Mac OS-specific storage files
 .DS_Store
 
+# PyCharm
+.idea/
+
 # vim
 *.swp
 *.swo
