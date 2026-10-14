@@ -3,7 +3,7 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "MLOps-ProyectoMiBici-Equipo7"
+name = "tc5061_proyecto_equipo07"
 version = "0.0.1"
 description = "Proyecto Mi Bici del equipo 7"
 authors = [
@@ -20,13 +20,13 @@ requires-python = "~=3.11.0"
 
 [tool.ruff]
 line-length = 99
-src = ["MLOps-ProyectoMiBici-Equipo7"]
-include = ["pyproject.toml", "MLOps-ProyectoMiBici-Equipo7/**/*.py"]
+src = ["tc5061_proyecto_equipo07"]
+include = ["pyproject.toml", "tc5061_proyecto_equipo07/**/*.py"]
 
 [tool.ruff.lint]
 extend-select = ["I"]  # Add import sorting
 
 [tool.ruff.lint.isort]
-known-first-party = ["MLOps-ProyectoMiBici-Equipo7"]
+known-first-party = ["tc5061_proyecto_equipo07"]
 force-sort-within-sections = true
 

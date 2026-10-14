@@ -2,7 +2,7 @@
 # GLOBALS                                                                       #
 #################################################################################
 
-PROJECT_NAME = MLOps-ProyectoMiBici-Equipo7
+PROJECT_NAME = tc5061_proyecto_equipo07
 PYTHON_VERSION = 3.11
 PYTHON_INTERPRETER = python
 
@@ -61,7 +61,7 @@ create_environment:
 ## Make dataset
 .PHONY: data
 data: requirements
-	$(PYTHON_INTERPRETER) MLOps-ProyectoMiBici-Equipo7/dataset.py
+	$(PYTHON_INTERPRETER) tc5061_proyecto_equipo07/dataset.py
 
 
 #################################################################################
