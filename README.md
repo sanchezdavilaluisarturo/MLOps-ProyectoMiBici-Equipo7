@@ -45,10 +45,82 @@ Responder con ML tres preguntas operativas de MiBici, sobre una base reproducibl
 
 ## Datos
 
-- **Viajes:** `datos_abiertos_AAAA_MM.csv` (mensuales, desde dic-2014), del portal de datos abiertos de MiBici.
-- **Estaciones:** `nomenclatura_AAAA_MM.csv` (id, nombre, latitud, longitud, capacidad).
-- Rango de fechas, número de viajes/estaciones, condiciones de uso y tratamiento de datos personales: *(completar tras ejecutar la ingesta)*.
-- Los datos **no se versionan en Git** (ver `.gitignore`); se reconstruyen con el comando de ingesta y se verifican contra el manifiesto.
+### Fuente
+
+[Datos abiertos de MiBici](https://mibici.net/es/datos-abiertos/), sistema de bicicleta pública del Área Metropolitana de Guadalajara. El portal publica **solo CSV**:
+
+- **Viajes:** `datos_abiertos_AAAA_MM.csv`, un archivo por mes desde dic-2014 (138 archivos publicados).
+- **Estaciones:** `nomenclatura_AAAA_MM.csv`, una sola versión vigente (`nomenclatura_2026_09.csv`).
+- Los datos **no se versionan en Git** (ver `.gitignore`); se reconstruyen desde el portal y se convierten a Parquet (ver los notebooks `0.02` y `0.03`).
+
+### Alcance del análisis
+
+| Concepto | Valor |
+|---|---|
+| Rango acordado por el equipo | enero 2020 a septiembre 2026 |
+| Viajes | **26,389,162** en 79 archivos mensuales |
+| Primer y último inicio de viaje | 2020-01-01 06:02:20 a 2026-09-30 23:59:48 |
+| Usuarios distintos | 81,115 |
+| Estaciones en los viajes | 475 (de 484 en la nomenclatura) |
+| Mes con menos viajes | 2020-04 (129,276), inicio de la pandemia de COVID-19 |
+| Mes con más viajes | 2026-09 (490,056) |
+| Tamaño | 2.1 GB en CSV, 0.6 GB en Parquet |
+
+> **Meses faltantes:** 2023-04 y 2023-05 ya no están publicados en el portal (se publicaban el 13-oct-2026 y desaparecieron sin aviso). El análisis trabaja con 79 de los 81 meses del rango y el hueco se tratará en la limpieza.
+
+Viajes por año (2026 llega solo hasta septiembre):
+
+| 2020 | 2021 | 2022 | 2023* | 2024 | 2025 | 2026 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2,866,072 | 3,184,410 | 4,202,942 | 3,595,720 | 4,645,921 | 4,532,032 | 3,362,065 |
+
+\* 2023 no incluye abril ni mayo.
+
+### Esquema de viajes
+
+| Columna (CSV original) | Columna en Parquet | Tipo | Nulos | Descripción |
+|---|---|---|---:|---|
+| `Viaje_Id` | `viaje_id` | entero | 0 | Identificador del viaje |
+| `Usuario_Id` | `usuario_id` | entero | 0 | Identificador del usuario (anonimizado) |
+| `Genero` | `genero` | categoría (`M`, `F`) | 135,232 (0.51 %) | Género del usuario |
+| `Año_de_nacimiento` | `anio_de_nacimiento` | entero | 33,796 (0.13 %) | Año de nacimiento |
+| `Inicio_del_viaje` | `inicio_del_viaje` | fecha y hora | 0 | Inicio del viaje |
+| `Fin_del_viaje` | `fin_del_viaje` | fecha y hora | 0 | Fin del viaje |
+| `Origen_Id` | `origen_id` | entero | 0 | Estación de origen |
+| `Destino_Id` | `destino_id` | entero | 0 | Estación de destino |
+
+### Esquema de estaciones
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `id` | entero | Identificador de la estación (único, de 2 a 519) |
+| `name` | texto | Código y cruce de calles, por ejemplo `(GDL-001) C. Epigmenio Glez./ Av. 16 de Sept.` |
+| `latitude`, `longitude` | decimal | Ubicación (entre 20.636 y 20.740 N, y entre -103.433 y -103.297 O) |
+| `dpcapacity` | entero | Capacidad en anclajes; promedio 16.9, de 0 a 39, **8,171 anclajes en total** |
+
+La nomenclatura tiene **484 estaciones** sin nulos.
+
+### Hallazgos de calidad
+
+Detectados en el EDA y pendientes de acordar su tratamiento en la limpieza:
+
+| Hallazgo | Evidencia | Notebook |
+|---|---|---|
+| **Nombre de columna corrupto** | 2024-02 y 2024-05 traen `A}äe_nacimiento` en lugar de `Año_de_nacimiento` | 0.02 |
+| **Codificación mezclada** | 43 archivos (54.4 %) en latin-1 y 36 (45.6 %) en UTF-8, sin regla por fecha | 0.02 |
+| **Formatos de fecha mezclados** | 76 archivos `AAAA-MM-DD hh:mm:ss`; 2023-11, 2024-09 y 2024-10 usan `DD/MM/AAAA hh:mm` | 0.02 |
+| **Viajes duplicados** | 758 filas completamente repetidas (1,516 filas comparten un `viaje_id` repetido) | 0.02, 0.03 |
+| **Años de nacimiento imposibles** | 1,255 anteriores a 1900 (mínimo 1) y 2,093 posteriores a 2010 (máximo 2023) | 0.01 |
+| **Duración cero** | 53,581 viajes con inicio igual a fin | 0.03 |
+| **Duración extrema** | 157 viajes de más de 24 horas (máximo 469 horas, cerca de 20 días); la mediana es 9.4 min y el percentil 99, 32.8 min | 0.01, 0.03 |
+| **Estaciones sin nomenclatura** | 3 ids (124, 405 y 407) aparecen en viajes y no en la nomenclatura: afecta a 3,961 viajes | 0.01 |
+| **Estaciones sin capacidad** | 4 estaciones con `dpcapacity = 0`, que afecta el cálculo de riesgo de P2 | 0.03 |
+| **Nomenclatura única** | Solo existe la versión 2026-09; estaciones retiradas o reubicadas no se pueden reconstruir para años anteriores | 0.02 |
+| **Sin inventario de bicicletas** | Los datos no registran bicis por estación (ver nota en Preguntas) | — |
+
+### Privacidad
+
+Los viajes incluyen `usuario_id`, género y año de nacimiento. Son datos personales aunque estén anonimizados; no se publican valores individuales en los notebooks ni en este README, solo agregados.
 
 ## Arquitectura
 
@@ -70,6 +142,10 @@ Responder con ML tres preguntas operativas de MiBici, sobre una base reproducibl
 ├── docs/              <- Documentación (mkdocs)
 ├── models/            <- Modelos serializados (ignorado por Git)
 ├── notebooks/         <- Convención FASE.NUMERO-INICIALES-descripcion.ipynb
+│   ├── 0.01-fat-exploracion-inicial.ipynb    <- EDA sobre Parquet: nulos, años de nacimiento, duración y conteo de entradas/salidas por estación
+│   ├── 0.02-dsh-exploracion-carga.ipynb      <- Descarga del portal, inventario por archivo (codificación, esquema, fechas), unión y Parquet
+│   ├── 0.03-lasd-exploracion-carga.ipynb     <- Obtención/lectura de los Parquet mensuales y descripción del dataset
+│   └── 0.1-equipo7-mibici.ipynb              <- Plantilla del entregable (pasos 1 a 4 y conclusiones)
 ├── references/        <- ML Canvas y diagrama de arquitectura
 ├── reports/figures/   <- Gráficas generadas
 ├── tc5061_proyecto_equipo07/   <- Módulo: config.py, dataset.py, features.py, modeling/, plots.py
