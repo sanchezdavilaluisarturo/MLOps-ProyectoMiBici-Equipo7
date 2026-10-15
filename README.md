@@ -54,6 +54,7 @@ Detalle de cada pregunta (qué se predice, relevancia y decisión que habilita):
 - **Viajes:** `datos_abiertos_AAAA_MM.csv`, un archivo por mes desde dic-2014 (138 archivos publicados).
 - **Estaciones:** `nomenclatura_AAAA_MM.csv`, una sola versión vigente (`nomenclatura_2026_09.csv`).
 - Los datos **no se versionan en Git** (ver `.gitignore`); se reconstruyen desde el portal y se convierten a Parquet (ver los notebooks `0.02` y `0.03`).
+- **Enlaces, registros y SHA-256 de cada archivo:** [`references/fuentes-datos.csv`](references/fuentes-datos.csv).
 
 ### Alcance del análisis
 
@@ -124,6 +125,8 @@ Detectados en el EDA y pendientes de acordar su tratamiento en la limpieza:
 
 Los viajes incluyen `usuario_id`, género y año de nacimiento. Son datos personales aunque estén anonimizados; no se publican valores individuales en los notebooks ni en este README, solo agregados.
 
+Rango de fechas y su justificación, variables y construcción de cada objetivo, condiciones de uso publicadas por MiBici y estrategia de partición temporal: [Definición de los datos](references/definicion-datos.md).
+
 ## Arquitectura
 
 ![Arquitectura del sistema](references/arquitectura.png)
@@ -137,6 +140,8 @@ Los viajes incluyen `usuario_id`, género y año de nacimiento. Son datos person
 | Modelado | scikit-learn, XGBoost, Optuna | Baselines y candidatos para regresión, clasificación y clustering |
 | Experimentos | MLflow Tracking | Parámetros, métricas, tags (equipo, pregunta, commit) y artefactos |
 
+Etapas por pregunta (limpieza, agregaciones, features, entrenamiento y evaluación): [Diseño del pipeline de ML](references/pipeline-ml.md).
+
 ## Estructura de carpetas
 
 ```
@@ -148,7 +153,12 @@ Los viajes incluyen `usuario_id`, género y año de nacimiento. Son datos person
 │   ├── 0.02-dsh-exploracion-carga.ipynb      <- Descarga del portal, inventario por archivo (codificación, esquema, fechas), unión y Parquet
 │   ├── 0.03-lasd-exploracion-carga.ipynb     <- Obtención/lectura de los Parquet mensuales y descripción del dataset
 │   └── 0.1-equipo7-mibici.ipynb              <- Plantilla del entregable (pasos 1 a 4 y conclusiones)
-├── references/        <- ML Canvas y diagrama de arquitectura
+├── references/        <- Documentos de diseño
+│   ├── ml-canvas.md          <- ML Canvas y descripción de P1, P2 y P3
+│   ├── definicion-datos.md   <- Rango, fuente, variables, objetivos, condiciones de uso y partición
+│   ├── pipeline-ml.md        <- Pipeline por pregunta: limpieza, features, entrenamiento y evaluación
+│   ├── fuentes-datos.csv     <- URLs, registros y SHA-256 de los archivos del portal
+│   └── arquitectura.png      <- Diagrama de arquitectura
 ├── reports/figures/   <- Gráficas generadas
 ├── tc5061_proyecto_equipo07/   <- Módulo: config.py, dataset.py, features.py, modeling/, plots.py
 ├── Makefile
