@@ -43,6 +43,8 @@ Responder con ML tres preguntas operativas de MiBici, sobre una base reproducibl
 
 > Los datos no incluyen inventario de bicicletas por estación; para P2 el riesgo se aproxima con el balance neto de viajes (salidas − llegadas) acumulado frente a la capacidad de la estación.
 
+Detalle de cada pregunta (qué se predice, relevancia y decisión que habilita): [ML Canvas](references/ml-canvas.md).
+
 ## Datos
 
 ### Fuente
