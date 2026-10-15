@@ -157,6 +157,7 @@ Etapas por pregunta (limpieza, agregaciones, features, entrenamiento y evaluaci�
 │   ├── ml-canvas.md          <- ML Canvas y descripción de P1, P2 y P3
 │   ├── definicion-datos.md   <- Rango, fuente, variables, objetivos, condiciones de uso y partición
 │   ├── pipeline-ml.md        <- Pipeline por pregunta: limpieza, features, entrenamiento y evaluación
+│   ├── pipeline-ml.png       <- Diagrama del pipeline por pregunta (fuente editable: pipeline-ml.svg)
 │   ├── fuentes-datos.csv     <- URLs, registros y SHA-256 de los archivos del portal
 │   └── arquitectura.png      <- Diagrama de arquitectura
 ├── reports/figures/   <- Gráficas generadas
