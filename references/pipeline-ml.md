@@ -4,22 +4,25 @@
 
 ## 1. Vista general
 
-```
-CSV del portal ──► Parquet por mes ──► Limpieza ──► Agregación ──► Features ──► Partición temporal
- (data/raw)        (data/external)     (interim)    (processed)                        │
-                                                                                       ▼
-                              Registro en MLflow ◄── Evaluación ◄── Entrenamiento (train / val)
-                                                         │
-                                                         └── Prueba (una sola vez)
-```
+![Pipeline de ML por pregunta](pipeline-ml.png)
 
-| Etapa | Módulo (CCDS) | Qué hace |
-|---|---|---|
-| Ingesta | `dataset.py` | Descarga, convierte a Parquet y escribe el manifiesto con SHA-256 |
-| Limpieza y agregación | `dataset.py` | Reglas de calidad y tablas por estación-hora |
-| Features | `features.py` | Calendario, rezagos, ventanas y atributos de estación |
-| Entrenamiento | `modeling/train.py` | Baseline y modelos candidatos, registrados en MLflow |
-| Evaluación | `modeling/train.py`, `plots.py` | Métricas por conjunto, por estación y figuras |
+*Una limpieza común se bifurca en tres carriles, uno por pregunta. Cada carril recorre agregación, features, partición, entrenamiento y evaluación, y registra en MLflow con el mismo `data_version`. En verde, los controles contra fuga de información del futuro.* El diagrama de componentes y herramientas está en la sección *Arquitectura* del README ([`arquitectura.png`](arquitectura.png)).
+
+El flujo sigue la convención de datos de CCDS (`raw` → `interim` → `processed`): cada etapa lee de una carpeta y escribe en la siguiente, y nunca se modifica lo que ya está en `raw`.
+
+| Etapa | Entrada | Código (CCDS) | Salida |
+|---|---|---|---|
+| **1. Ingesta** | CSV del portal | `dataset.py` | `data/raw/` con los CSV originales y `manifest.json` (registros y SHA-256) |
+| **2. Limpieza** | `data/raw/` | `dataset.py` | `data/interim/` con Parquet limpio (columnas, fechas y tipos normalizados) |
+| **3. Agregación y features** | `data/interim/` | `features.py` | `data/processed/` con tablas de features por estación-hora y por estación |
+| **4. Partición** | `data/processed/` | `features.py` | Conjuntos de entrenamiento, validación y prueba (temporal) |
+| **5. Entrenamiento** | `data/processed/` | `modeling/train.py` | `models/` con los modelos serializados, un run de MLflow por pregunta |
+| **6. Evaluación** | Modelos y conjuntos | `modeling/train.py`, `plots.py` | Métricas en MLflow y figuras en `reports/figures/` |
+| **7. Predicción** | Modelo registrado y datos nuevos | `modeling/predict.py` | Predicciones por lotes |
+
+**Trazabilidad:** cada run de MLflow guarda `data_version`, el hash del manifiesto, de modo que cualquier métrica se puede ligar a la versión exacta de los datos.
+
+**Estado de los notebooks frente a CCDS:** `0.01` y `0.03` leen los Parquet de `data/external/` y `0.02` guarda el Parquet en `data/interim/`. Al migrar la lógica a `dataset.py`, todos deben leer de `data/interim/`, que es donde el diagrama ubica el Parquet limpio. `external` queda para datos de terceros que no pasan por la ingesta.
 
 **Principios comunes**
 - **Reproducibilidad:** semilla 42, dependencias con versiones fijadas y manifiesto de datos.
