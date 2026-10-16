@@ -64,6 +64,20 @@ data: requirements
 	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.dataset todo
 
 
+## Make P3 features (partición temporal, estaciones y demanda por estación-hora)
+.PHONY: features
+features:
+	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.dataset p3-particionar
+	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.features p3-features
+
+
+## Train P3 (modelo base y modelo alternativo; con P3_REGISTRAR_MLFLOW=true registra en MLflow)
+.PHONY: train
+train:
+	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.modeling.train p3-baseline
+	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.modeling.train p3-alternativo
+
+
 #################################################################################
 # Self Documenting Commands                                                     #
 #################################################################################
