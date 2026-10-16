@@ -1,0 +1,116 @@
+# Las tres preguntas del proyecto (P1, P2 y P3) en una sola acción.
+#
+# - En cada PR que toca el módulo o las pruebas corre la calidad (ruff y pytest, sin datos).
+# - A mano (Run workflow) corre la calidad una vez y luego llama, en paralelo, a la acción de
+#   cada pregunta: p1.yml, p2.yml y p3.yml. Cada una también se puede correr sola.
+#
+# Estado: P3 completa. P1 y P2 son placeholders (avisan y terminan bien) hasta que sus
+# responsables completen su acción; ver las instrucciones al inicio de p1.yml y p2.yml.
+#
+# Responsables según la autoría de los notebooks (confirmar en el equipo):
+#   P1 Daniel Sánchez Hernández (*-dsh-*)   P2 Fernando Arreola Treviño (*-fat-*)
+#   P3 Luis Arturo Sánchez Davila (*-lasd-*)
+#
+# Secret del repositorio (Settings > Secrets and variables > Actions > Secrets):
+#   MLFLOW_TRACKING_URI  URL del servidor MLflow (se hereda a las acciones de cada pregunta)
+# Nombre de los runs: desde aquí quedan `mibici-equipo07-todas-p1`, `-todas-p2` y `-todas-p3` (p. ej.
+# `mibici-equipo07-todas-p3-baseline`). Cada acción por pregunta corrida sola usa `mibici-equipo07-pN`.
+# Para forzarlo, se llena el campo `nombre_run` de Run workflow: quedan `<nombre_run>-p1`, `-p2` y `-p3`.
+# Ya no hay variable del repositorio.
+name: TC5061 - Las 3 preguntas
+
+on:
+  workflow_dispatch:
+    inputs:
+      nombre_run:
+        description: "Forzar el prefijo de los runs de las 3 preguntas (vacío: mibici-equipo07-todas). Quedan <valor>-p1, <valor>-p2 y <valor>-p3"
+        type: string
+        default: ""
+      registrar:
+        description: "Registrar los runs en MLflow (escribe en el servidor del equipo)"
+        type: boolean
+        default: false
+      de_nuevo:
+        description: "Crear un run nuevo aunque ya exista uno terminado con ese nombre"
+        type: boolean
+        default: false
+      exigir_aceptacion:
+        description: "P3: fallar si el modelo alternativo no cumple los criterios de aceptación"
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "tc5061_proyecto_equipo07/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "Makefile"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: todas-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MPLBACKEND: Agg
+
+jobs:
+  calidad:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Formato y lint del módulo
+        run: |
+          ruff format --check tc5061_proyecto_equipo07
+          ruff check tc5061_proyecto_equipo07/features.py tc5061_proyecto_equipo07/plots.py tc5061_proyecto_equipo07/modeling
+          # AGREGAR (P1, P2): sus módulos nuevos en la línea `ruff check` de arriba (estricta: bloquea
+          # el PR) cuando ya pasen el lint. Hoy el chequeo estricto cubre solo lo de P3.
+      - name: Lint de todo el paquete (informativo)
+        # dataset.py trae un aviso anterior a P3 (FURB192); no bloquea hasta que el equipo lo corrija
+        continue-on-error: true
+        run: ruff check tc5061_proyecto_equipo07
+      - name: Pruebas
+        # Corre todo `tests/`: P1 y P2 solo agregan sus archivos (test_p1_*.py, test_p2_*.py)
+        run: pytest tests -q
+
+  # Las acciones de cada pregunta solo corren a mano, no en los PR
+  p1:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: calidad
+    uses: ./.github/workflows/p1.yml
+    secrets: inherit
+    with:
+      prefijo_run: ${{ format('{0}-p1', inputs.nombre_run || 'mibici-equipo07-todas') }}
+      registrar: ${{ inputs.registrar }}
+      de_nuevo: ${{ inputs.de_nuevo }}
+
+  p2:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: calidad
+    uses: ./.github/workflows/p2.yml
+    secrets: inherit
+    with:
+      prefijo_run: ${{ format('{0}-p2', inputs.nombre_run || 'mibici-equipo07-todas') }}
+      registrar: ${{ inputs.registrar }}
+      de_nuevo: ${{ inputs.de_nuevo }}
+
+  p3:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: calidad
+    uses: ./.github/workflows/p3.yml
+    secrets: inherit
+    with:
+      prefijo_run: ${{ format('{0}-p3', inputs.nombre_run || 'mibici-equipo07-todas') }}
+      registrar: ${{ inputs.registrar }}
+      de_nuevo: ${{ inputs.de_nuevo }}
+      exigir_aceptacion: ${{ inputs.exigir_aceptacion }}
+      omitir_calidad: true

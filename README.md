@@ -5,7 +5,6 @@
 </a>
 
 Proyecto integrador de **Operaciones de Aprendizaje Automático (MLOps, TC5061)** del Equipo 7. Propone y construye una solución de Machine Learning sobre los datos abiertos de **MiBici**, el sistema de bicicleta pública del Área Metropolitana de Guadalajara.
-
 ## Instalación
 
 Requiere Python 3.11 y [uv](https://docs.astral.sh/uv/).
@@ -43,7 +42,6 @@ Cada etapa es un comando del módulo `tc5061_proyecto_equipo07` y tiene su noteb
 | 2 | — | `0.02-lasd-eda-p3` | EDA de P3: calidad, tiempo y estaciones (solo hallazgos) |
 | 3 | `make features` | `0.03-lasd-limpieza-p3` | `viajes_modelado_*.parquet` (con partición temporal), `estaciones_train.parquet` y `demanda_estacion_hora.parquet` |
 | 4 | `make train` | `0.04-lasd-baseline-p3`, `0.05-lasd-mejoramodelo-p3` | Modelo base y modelo alternativo de P3, con artefactos en `reports/figures/p3_*` y, si se pide, runs en MLflow |
-
 **Convención:** toda función que se agrega al módulo para P3 se llama `p3_<nombre>` (por ejemplo, `p3_perfil_de_estaciones`). Las funciones de `dataset.py` anteriores a P3 no se renombran: lo que subió el equipo solo se amplía.
 
 **Variables de entorno.** El mismo comando corre en la terminal, en los notebooks y en GitHub Actions (`.github/workflows/p3.yml`); cada parámetro tiene también su opción de línea de comandos:
@@ -51,16 +49,15 @@ Cada etapa es un comando del módulo `tc5061_proyecto_equipo07` y tiene su noteb
 | Variable | Qué controla | Por defecto |
 |---|---|---|
 | `MLFLOW_TRACKING_URI` | URL del servidor MLflow (en CI, el secret del repositorio `secrets.MLFLOW_TRACKING_URI`) | `.env` |
-| `MLFLOW_RUN_NAME` | Prefijo del nombre de los runs: `<valor>-baseline` y `<valor>-pca_kmeans` (en CI, `vars.MLFLOW_RUN_NAME`) | `baseline` y `pca_kmeans` |
+| `MLFLOW_RUN_NAME` | Prefijo del nombre de los runs: `<valor>-baseline` y `<valor>-pca_kmeans` (en CI lo fija el workflow: `mibici-equipo07-pN` si la pregunta corre sola y `mibici-equipo07-todas-pN` si corre desde la acción de las 3; se puede forzar con el campo `nombre_run` de *Run workflow*, en la pregunta o en la acción de las 3) | `baseline` y `pca_kmeans` |
 | `P3_REGISTRAR_MLFLOW` | Escribir en MLflow | `false` |
 | `P3_REGISTRAR_DE_NUEVO` | Crear un run nuevo aunque ya exista uno terminado con ese nombre | `false` |
 | `P3_EXIGIR_ACEPTACION` | Salir con error si el modelo alternativo no cumple los criterios de aceptación | `false` |
 | `P3_EXPERIMENTO` | Experimento de MLflow | `mibici-equipo07` (el de `config.py`) |
 | `P3_SEMILLA`, `P3_K_MINIMO`, `P3_K_MAXIMO`, `P3_MIN_SALIDAS_TRAIN`, `P3_MIN_SALIDAS_VALID`, `P3_COMPONENTES`, `P3_SEMILLAS_BUSQUEDA` | Parámetros del modelo | `42`, `2`, `10`, `1000`, `300`, `3,4,5,6,8,10`, `5` |
-
 **Pruebas:** `pytest tests`.
 
-**GitHub Actions:** el workflow `p3.yml` corre `ruff` y `pytest` en los PR que tocan el módulo; el entrenamiento solo corre a mano (*Run workflow*), descarga los datos con caché por el hash del manifiesto y solo registra en MLflow si se marca `registrar`.
+**GitHub Actions:** `TC5061-Proyecto-Equipo07.yml` corre `ruff` y `pytest` en los PR que tocan el módulo y, a mano (*Run workflow*), corre la calidad y llama a la acción de cada pregunta (`p1.yml`, `p2.yml` y `p3.yml`); cada una también se corre sola. Hoy solo `p3.yml` está completa (P1 y P2 avisan y terminan bien). El entrenamiento de P3 descarga los datos con caché por el hash del manifiesto y solo registra en MLflow si se marca `registrar`.
 
 **MLflow del equipo:** https://mlflow.equipo7mlops.com/ (la URL se define en `MLFLOW_TRACKING_URI`). Los runs de la primera entrega (`baseline` y `pca_kmeans`) están en el experimento `p3`; desde ahora los comandos usan `mibici-equipo07`.
 
@@ -79,7 +76,6 @@ Responder con ML tres preguntas operativas de MiBici, sobre una base reproducibl
 > Los datos no incluyen inventario de bicicletas por estación; para P2 el riesgo se aproxima con el balance neto de viajes (salidas − llegadas) acumulado frente a la capacidad de la estación.
 
 Detalle de cada pregunta (qué se predice, relevancia y decisión que habilita): [ML Canvas](references/ml-canvas.md).
-
 ## Datos
 
 ### Fuente
@@ -159,7 +155,6 @@ Detectados en el EDA. El tratamiento aplicado a cada uno se documenta en *Limpie
 | **Capacidad sin relación con la demanda** | Correlación de Spearman entre salidas y capacidad de −0.02 | 0.02-lasd |
 | **Demanda concentrada** | El 10 % de las estaciones (48) concentra el 37.8 % de los viajes; 74 tienen menos de 1,000 salidas | 0.02-lasd |
 | **Sin inventario de bicicletas** | Los datos no registran bicis por estación (ver nota en Preguntas) | — |
-
 ### Privacidad
 
 Los viajes incluyen `usuario_id`, género y año de nacimiento. Son datos personales aunque estén anonimizados; no se publican valores individuales en los notebooks ni en este README, solo agregados.
@@ -176,7 +171,6 @@ Rango de fechas y su justificación, variables y construcción de cada objetivo,
 | **Fin de semana** | Un solo pico amplio entre 11:00 y 14:00; sábado y domingo concentran el 20.4 % de los viajes |
 | **Desbalance** | Acumulan bicicletas estaciones del centro (GDL-049, +148,627) y pierden las de Av. Vallarta (GDL-127, −98,030) |
 | **Pendiente** | 2026-09 (490,056) es el máximo de la serie y +30 % contra 2025-09; falta verificar que no sea una carga atípica |
-
 ### Limpieza y partición
 
 Reglas aplicadas por `dataset.limpiar` y documentadas en `0.03-lasd-limpieza-p3`, cada una con su justificación en el notebook:
@@ -202,7 +196,6 @@ Reglas aplicadas por `dataset.limpiar` y documentadas en `0.03-lasd-limpieza-p3`
 | brecha | 24 h antes de cada frontera | 29,462 | 0.1 |
 
 **Preprocesamiento:** `data/processed/estaciones_train.parquet` (484 estaciones, calculada solo con entrenamiento) y `data/processed/demanda_estacion_hora.parquet` (16,179,853 filas para 472 estaciones; 44.2 % de las estación-horas sin viajes), generadas por `features p3-features`.
-
 ## Arquitectura
 
 ![Arquitectura del sistema](references/arquitectura.png)
@@ -259,7 +252,6 @@ A igual `k` (`k = 3`) tampoco hay ventaja clara: el baseline logra ARI 0.689 y g
 - **Copia local:** los mismos artefactos se guardan en `reports/figures/p3_*` y sí se versionan en Git.
 
 > **Al crear un experimento nuevo en este servidor, usar `artifact_location="mlflow-artifacts:/<nombre>"`.** Sin esa opción el servidor asigna una ruta local suya (`/home/ec2-user/mlflow/artifacts/...`) y la subida de artefactos falla con `Errno 45`. El servidor es MLflow 3.1.4 y el `requirements.txt` fija el cliente en 3.16.0: conviene alinearlos.
-
 ## Estructura de carpetas
 
 ```
@@ -289,12 +281,15 @@ A igual `k` (`k = 3`) tampoco hay ventaja clara: el baseline logra ARI 0.689 y g
 ├── reports/figures/   <- Gráficas y tablas generadas (p3_asignacion_grupos.csv, p3_resumen_grupos.csv, p3_variables.json, p3_mapa_grupos.png, p3_silueta_por_k.png)
 ├── tc5061_proyecto_equipo07/   <- Módulo: config.py, dataset.py, features.py, modeling/ (train.py, predict.py), plots.py
 ├── tests/             <- Pruebas (pytest) de las funciones p3_*
-├── .github/workflows/p3.yml   <- Calidad en los PR y entrenamiento manual de P3
+├── .github/workflows/
+│   ├── TC5061-Proyecto-Equipo07.yml   <- Calidad en los PR y acción que corre las 3 preguntas
+│   ├── p1.yml                         <- Acción de P1 (pendiente)
+│   ├── p2.yml                         <- Acción de P2 (pendiente)
+│   └── p3.yml                         <- Acción de P3: entrenamiento y registro en MLflow
 ├── Makefile
 ├── pyproject.toml
 └── requirements.txt   <- Dependencias con versiones fijadas
 ```
-
 ## Flujo de trabajo con Git (GitHub Flow)
 
 - `main` está protegida: todo cambio entra por Pull Request con al menos una revisión.
