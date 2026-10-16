@@ -61,7 +61,7 @@ create_environment:
 ## Make dataset
 .PHONY: data
 data: requirements
-	$(PYTHON_INTERPRETER) tc5061_proyecto_equipo07/dataset.py
+	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.dataset todo
 
 
 #################################################################################
