@@ -39,10 +39,10 @@ Cada etapa es un comando del módulo `tc5061_proyecto_equipo07` y tiene su noteb
 
 | Orden | Comando | Notebook | Qué deja listo |
 |---|---|---|---|
-| 1 | `make data` (`dataset todo`) | `0.02-dsh-exploracion-carga`, `0.03-lasd-exploracion-carga` | CSV en `data/raw/`, Parquet normalizado en `data/interim/` y datos limpios en `data/processed/` |
-| 2 | — | `0.05-lasd-eda-p3` | EDA de P3: calidad, tiempo y estaciones (solo hallazgos) |
-| 3 | `make features` | `0.06-lasd-limpieza-p3` | `viajes_modelado_*.parquet` (con partición temporal), `estaciones_train.parquet` y `demanda_estacion_hora.parquet` |
-| 4 | `make train` | `0.07-lasd-baseline-p3`, `0.08-lasd-mejoramodelo-p3` | Modelo base y modelo alternativo de P3, con artefactos en `reports/figures/p3_*` y, si se pide, runs en MLflow |
+| 1 | `make data` (`dataset todo`) | `0.02-dsh-exploracion-carga`, `0.01-lasd-exploracion-carga` | CSV en `data/raw/`, Parquet normalizado en `data/interim/` y datos limpios en `data/processed/` |
+| 2 | — | `0.02-lasd-eda-p3` | EDA de P3: calidad, tiempo y estaciones (solo hallazgos) |
+| 3 | `make features` | `0.03-lasd-limpieza-p3` | `viajes_modelado_*.parquet` (con partición temporal), `estaciones_train.parquet` y `demanda_estacion_hora.parquet` |
+| 4 | `make train` | `0.04-lasd-baseline-p3`, `0.05-lasd-mejoramodelo-p3` | Modelo base y modelo alternativo de P3, con artefactos en `reports/figures/p3_*` y, si se pide, runs en MLflow |
 
 **Convención:** toda función que se agrega al módulo para P3 se llama `p3_<nombre>` (por ejemplo, `p3_perfil_de_estaciones`). Las funciones de `dataset.py` anteriores a P3 no se renombran: lo que subió el equipo solo se amplía.
 
@@ -88,7 +88,7 @@ Detalle de cada pregunta (qué se predice, relevancia y decisión que habilita):
 
 - **Viajes:** `datos_abiertos_AAAA_MM.csv`, un archivo por mes desde dic-2014 (140 archivos publicados al 15-oct-2026).
 - **Estaciones:** `nomenclatura_AAAA_MM.csv`, una sola versión vigente (`nomenclatura_2026_09.csv`).
-- Los datos **no se versionan en Git** (ver `.gitignore`); se reconstruyen desde el portal y se convierten a Parquet (ver `dataset.py` y los notebooks `0.02` y `0.03`).
+- Los datos **no se versionan en Git** (ver `.gitignore`); se reconstruyen desde el portal y se convierten a Parquet (ver `dataset.py` y los notebooks `0.02-dsh` y `0.01-lasd`).
 - **Enlaces, registros y SHA-256 de cada archivo:** [`references/fuentes-datos.csv`](references/fuentes-datos.csv).
 
 ### Alcance del análisis
@@ -144,20 +144,20 @@ Detectados en el EDA. El tratamiento aplicado a cada uno se documenta en *Limpie
 
 | Hallazgo | Evidencia | Notebook |
 |---|---|---|
-| **Nombre de columna corrupto** | 2024-02 y 2024-05 traen `A}äe_nacimiento` en lugar de `Año_de_nacimiento` | 0.02 |
-| **Codificación mezclada** | 43 archivos (53.1 %) en latin-1 y 38 (46.9 %) en UTF-8, sin regla por fecha | 0.02 |
-| **Formatos de fecha mezclados** | 78 archivos `AAAA-MM-DD hh:mm:ss`; 2023-11, 2024-09 y 2024-10 usan `DD/MM/AAAA hh:mm` | 0.02 |
-| **Viajes duplicados** | 758 filas completamente repetidas (1,516 filas comparten un `viaje_id` repetido) | 0.02, 0.05 |
-| **Años de nacimiento imposibles** | 1,255 anteriores a 1900 (mínimo 1) y 2,101 posteriores a 2010 (máximo 2023) | 0.01 |
-| **Duración cero** | 55,035 viajes con inicio igual a fin | 0.05 |
-| **Duración extrema** | 159 viajes de más de 24 horas (máximo 469 horas, cerca de 20 días); la mediana es 9.4 min y el percentil 99, 32.8 min | 0.01, 0.05 |
-| **Estaciones sin nomenclatura** | 3 ids (124, 405 y 407) aparecen en viajes y no en la nomenclatura: afecta a 3,961 viajes | 0.01, 0.05 |
-| **Estaciones sin capacidad** | 4 estaciones con `dpcapacity = 0`, que afecta el cálculo de riesgo de P2 | 0.05 |
-| **Nomenclatura única** | Solo existe la versión 2026-09; estaciones retiradas o reubicadas no se pueden reconstruir para años anteriores | 0.02 |
-| **Sin servicio de madrugada** | Solo 194 viajes entre la 1:00 y las 4:59 (0.0007 %); la hora 0 tiene 145,857 (0.5 %) | 0.05 |
-| **Estaciones nuevas** | 109 estaciones no tienen viajes en entrenamiento y aparecen en prueba (3.8 % de sus viajes); 12 de la nomenclatura no registran ninguno | 0.06 |
-| **Capacidad sin relación con la demanda** | Correlación de Spearman entre salidas y capacidad de −0.02 | 0.05 |
-| **Demanda concentrada** | El 10 % de las estaciones (48) concentra el 37.8 % de los viajes; 74 tienen menos de 1,000 salidas | 0.05 |
+| **Nombre de columna corrupto** | 2024-02 y 2024-05 traen `A}äe_nacimiento` en lugar de `Año_de_nacimiento` | 0.02-dsh |
+| **Codificación mezclada** | 43 archivos (53.1 %) en latin-1 y 38 (46.9 %) en UTF-8, sin regla por fecha | 0.02-dsh |
+| **Formatos de fecha mezclados** | 78 archivos `AAAA-MM-DD hh:mm:ss`; 2023-11, 2024-09 y 2024-10 usan `DD/MM/AAAA hh:mm` | 0.02-dsh |
+| **Viajes duplicados** | 758 filas completamente repetidas (1,516 filas comparten un `viaje_id` repetido) | 0.02-dsh, 0.02-lasd |
+| **Años de nacimiento imposibles** | 1,255 anteriores a 1900 (mínimo 1) y 2,101 posteriores a 2010 (máximo 2023) | 0.01-fat |
+| **Duración cero** | 55,035 viajes con inicio igual a fin | 0.02-lasd |
+| **Duración extrema** | 159 viajes de más de 24 horas (máximo 469 horas, cerca de 20 días); la mediana es 9.4 min y el percentil 99, 32.8 min | 0.01-fat, 0.02-lasd |
+| **Estaciones sin nomenclatura** | 3 ids (124, 405 y 407) aparecen en viajes y no en la nomenclatura: afecta a 3,961 viajes | 0.01-fat, 0.02-lasd |
+| **Estaciones sin capacidad** | 4 estaciones con `dpcapacity = 0`, que afecta el cálculo de riesgo de P2 | 0.02-lasd |
+| **Nomenclatura única** | Solo existe la versión 2026-09; estaciones retiradas o reubicadas no se pueden reconstruir para años anteriores | 0.02-dsh |
+| **Sin servicio de madrugada** | Solo 194 viajes entre la 1:00 y las 4:59 (0.0007 %); la hora 0 tiene 145,857 (0.5 %) | 0.02-lasd |
+| **Estaciones nuevas** | 109 estaciones no tienen viajes en entrenamiento y aparecen en prueba (3.8 % de sus viajes); 12 de la nomenclatura no registran ninguno | 0.03-lasd |
+| **Capacidad sin relación con la demanda** | Correlación de Spearman entre salidas y capacidad de −0.02 | 0.02-lasd |
+| **Demanda concentrada** | El 10 % de las estaciones (48) concentra el 37.8 % de los viajes; 74 tienen menos de 1,000 salidas | 0.02-lasd |
 | **Sin inventario de bicicletas** | Los datos no registran bicis por estación (ver nota en Preguntas) | — |
 
 ### Privacidad
@@ -179,7 +179,7 @@ Rango de fechas y su justificación, variables y construcción de cada objetivo,
 
 ### Limpieza y partición
 
-Reglas aplicadas por `dataset.limpiar` y documentadas en `0.06-lasd-limpieza-p3`, cada una con su justificación en el notebook:
+Reglas aplicadas por `dataset.limpiar` y documentadas en `0.03-lasd-limpieza-p3`, cada una con su justificación en el notebook:
 
 | Hallazgo | Decisión | Registros |
 |---|---|---:|
@@ -220,7 +220,7 @@ Etapas por pregunta (limpieza, agregaciones, features, entrenamiento y evaluaci�
 
 ## Modelo base de P3 (clustering de estaciones)
 
-Notebook `0.07-lasd-baseline-p3` (código en `modeling/train.py`). K-Means sobre variables estandarizadas, ajustado solo con el conjunto de entrenamiento.
+Notebook `0.04-lasd-baseline-p3` (código en `modeling/train.py`). K-Means sobre variables estandarizadas, ajustado solo con el conjunto de entrenamiento.
 
 | Elemento | Valor |
 |---|---|
@@ -240,7 +240,7 @@ Notebook `0.07-lasd-baseline-p3` (código en `modeling/train.py`). K-Means sobre
 
 ### Modelo alternativo de P3
 
-Notebook `0.08-lasd-mejoramodelo-p3`. PCA sobre las mismas variables y K-Means con `k` de 3 a 6, con criterios de aceptación fijados antes de ver los resultados y cinco semillas por configuración. Resultado con los 81 meses: **no se acepta**.
+Notebook `0.05-lasd-mejoramodelo-p3`. PCA sobre las mismas variables y K-Means con `k` de 3 a 6, con criterios de aceptación fijados antes de ver los resultados y cinco semillas por configuración. Resultado con los 81 meses: **no se acepta**.
 
 | Criterio | Baseline (`k = 2`) | Alternativo (`k = 3`, 5 componentes) | ¿Cumple? |
 |---|---|---|---|
@@ -272,13 +272,13 @@ A igual `k` (`k = 3`) tampoco hay ventaja clara: el baseline logra ARI 0.689 y g
 ├── models/            <- Modelos serializados (ignorado por Git)
 ├── notebooks/         <- Convención FASE.NUMERO-INICIALES-descripcion.ipynb
 │   ├── 0.01-fat-exploracion-inicial.ipynb    <- EDA sobre Parquet: nulos, años de nacimiento, duración y conteo de entradas/salidas por estación
+│   ├── 0.01-lasd-exploracion-carga.ipynb     <- P3, Paso 1: carga y descripción del dataset con dataset.py
 │   ├── 0.02-dsh-exploracion-carga.ipynb      <- Descarga del portal, inventario por archivo (codificación, esquema, fechas), unión y Parquet
-│   ├── 0.03-lasd-exploracion-carga.ipynb     <- P3, Paso 1: carga y descripción del dataset con dataset.py
+│   ├── 0.02-lasd-eda-p3.ipynb                <- P3, Paso 2: EDA (calidad, tiempo y estaciones)
+│   ├── 0.03-lasd-limpieza-p3.ipynb           <- P3, Paso 3: limpieza, partición temporal y preprocesamiento
 │   ├── 0.04-dsh-eda-p1.ipynb                 <- EDA de P1
-│   ├── 0.05-lasd-eda-p3.ipynb                <- P3, Paso 2: EDA (calidad, tiempo y estaciones)
-│   ├── 0.06-lasd-limpieza-p3.ipynb           <- P3, Paso 3: limpieza, partición temporal y preprocesamiento
-│   ├── 0.07-lasd-baseline-p3.ipynb           <- P3, Paso 4: modelo base y registro en MLflow
-│   └── 0.08-lasd-mejoramodelo-p3.ipynb       <- P3, Paso 4: modelo alternativo, comparación y registro en MLflow
+│   ├── 0.04-lasd-baseline-p3.ipynb           <- P3, Paso 4: modelo base y registro en MLflow
+│   └── 0.05-lasd-mejoramodelo-p3.ipynb       <- P3, Paso 4: modelo alternativo, comparación y registro en MLflow
 ├── references/        <- Documentos de diseño
 │   ├── ml-canvas.md          <- ML Canvas y descripción de P1, P2 y P3
 │   ├── definicion-datos.md   <- Rango, fuente, variables, objetivos, condiciones de uso y partición

@@ -1,6 +1,6 @@
 # Diseño del pipeline de ML — Proyecto MiBici (Equipo 7)
 
-> **Estado:** borrador para acordar en el equipo. Las cifras salen del EDA (notebooks 0.01 a 0.03 y `definicion-datos.md`). Los umbrales y parámetros marcados como *propuesta* se fijarán con evidencia en el EDA.
+> **Estado:** borrador para acordar en el equipo. Las cifras salen del EDA (notebooks `0.01-fat`, `0.02-dsh` y `0.01-lasd`, y `definicion-datos.md`). Los umbrales y parámetros marcados como *propuesta* se fijarán con evidencia en el EDA.
 
 ## 1. Vista general
 
@@ -22,7 +22,7 @@ El flujo sigue la convención de datos de CCDS (`raw` → `interim` → `process
 
 **Trazabilidad:** cada run de MLflow guarda `data_version`, el hash del manifiesto, de modo que cualquier métrica se puede ligar a la versión exacta de los datos.
 
-**Estado de los notebooks frente a CCDS:** `0.01` y `0.03` leen los Parquet de `data/external/` y `0.02` guarda el Parquet en `data/interim/`. Al migrar la lógica a `dataset.py`, todos deben leer de `data/interim/`, que es donde el diagrama ubica el Parquet limpio. `external` queda para datos de terceros que no pasan por la ingesta.
+**Estado de los notebooks frente a CCDS:** los notebooks de P3 (`0.01-lasd` a `0.05-lasd`) ya usan `dataset.py`: leen el Parquet normalizado de `data/interim/` (que deja `make data`) y los datos de `data/processed/`. `0.02-dsh` guarda el Parquet en `data/interim/`. Solo `0.01-fat` sigue leyendo los Parquet mensuales de `data/external/`; al migrar su lógica a `dataset.py` también debe leer de `data/interim/`. `external` queda para datos de terceros que no pasan por la ingesta.
 
 **Principios comunes**
 - **Reproducibilidad:** semilla 42, dependencias con versiones fijadas y manifiesto de datos.
