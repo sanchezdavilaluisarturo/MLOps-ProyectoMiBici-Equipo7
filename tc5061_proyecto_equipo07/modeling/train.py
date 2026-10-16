@@ -1,0 +1,894 @@
+"""Entrenamiento de P3 (clustering de estaciones): modelo base, modelo alternativo y MLflow.
+
+Comandos (cada parámetro tiene una variable de entorno equivalente, ver config.py):
+    python -m tc5061_proyecto_equipo07.modeling.train p3-baseline
+    python -m tc5061_proyecto_equipo07.modeling.train p3-alternativo
+
+Entrada: data/processed/viajes_modelado_AAAA-MM_AAAA-MM.parquet (`dataset p3-particionar`).
+Con P3_REGISTRAR_MLFLOW=true registra el run en MLflow (URL en MLFLOW_TRACKING_URI, nombre en
+MLFLOW_RUN_NAME); sin ella solo entrena, evalúa y deja los artefactos en reports/figures/.
+"""
+
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+import subprocess
+import warnings
+
+from loguru import logger
+import numpy as np
+import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.metrics import (
+    calinski_harabasz_score,
+    davies_bouldin_score,
+    silhouette_score,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
+import typer
+
+from tc5061_proyecto_equipo07 import config as cfg
+from tc5061_proyecto_equipo07 import dataset, plots
+from tc5061_proyecto_equipo07.features import p3_construir_caracteristicas
+from tc5061_proyecto_equipo07.modeling.predict import p3_estabilidad_ari, p3_reasignar_grupos
+
+# numpy 2.2 con Accelerate (macOS) emite RuntimeWarning falsos en matmul con datos finitos;
+# la finitud se verifica con un assert en p3_ajustar_baseline
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="sklearn.utils.extmath")
+
+app = typer.Typer()
+
+# Número de grupos que explora el modelo alternativo: no se fuerza k = 2
+P3_K_ALTERNATIVO = range(3, 7)
+HORAS_MANANA = [f"lab_h{hora:02d}" for hora in range(6, 10)]
+HORAS_TARDE = [f"lab_h{hora:02d}" for hora in range(17, 21)]
+
+
+# ---------------------------------------------------------------------------------------------
+# Modelo base: StandardScaler + K-Means
+# ---------------------------------------------------------------------------------------------
+
+
+@dataclass
+class P3Baseline:
+    """Resultado del modelo base: modelo, métricas y las tablas que usan las comparaciones."""
+
+    modelo: Pipeline
+    k_elegido: int
+    resultados_k: pd.DataFrame
+    caracteristicas_train: pd.DataFrame  # incluye la columna `grupo`
+    caracteristicas_valid: pd.DataFrame
+    columnas_modelo: list[str]
+    comunes: pd.Index
+    x_train: pd.DataFrame
+    z_train: np.ndarray
+    tamanos: pd.Series
+    metricas: dict
+    semilla: int
+    k_minimo: int
+    k_maximo: int
+    min_salidas_train: int
+    min_salidas_valid: int
+
+
+def p3_buscar_k(z_train: np.ndarray, k_minimo: int, k_maximo: int, semilla: int) -> pd.DataFrame:
+    """Ajusta K-Means para cada `k` y regresa silueta, Davies-Bouldin, Calinski-Harabasz, inercia
+    y tamaño del grupo más chico (índice `k`)."""
+    filas = []
+    for k in range(k_minimo, k_maximo + 1):
+        modelo_k = KMeans(n_clusters=k, n_init=10, random_state=semilla).fit(z_train)
+        filas.append(
+            {
+                "k": k,
+                "silueta": silhouette_score(z_train, modelo_k.labels_),
+                "davies_bouldin": davies_bouldin_score(z_train, modelo_k.labels_),
+                "calinski_harabasz": calinski_harabasz_score(z_train, modelo_k.labels_),
+                "inercia": modelo_k.inertia_,
+                "tam_min": int(np.bincount(modelo_k.labels_).min()),
+            }
+        )
+    return pd.DataFrame(filas).set_index("k")
+
+
+def p3_ajustar_baseline(
+    limpios: pd.DataFrame,
+    semilla: int = cfg.P3_SEMILLA,
+    k_minimo: int = cfg.P3_K_MINIMO,
+    k_maximo: int = cfg.P3_K_MAXIMO,
+    min_salidas_train: int = cfg.P3_MIN_SALIDAS_TRAIN,
+    min_salidas_valid: int = cfg.P3_MIN_SALIDAS_VALID,
+) -> P3Baseline:
+    """Entrena el modelo base: variables por estación, `k` por silueta y estabilidad en valid.
+
+    Usa solo los viajes de entrenamiento para ajustar; los de validación solo sirven para medir
+    cuánto cambian los grupos al reasignar las estaciones con otro periodo. `limpios` es el
+    dataset de modelado (con `particion` y `duracion_min`).
+    """
+    car_train, car_valid, columnas = p3_construir_caracteristicas(
+        limpios, min_salidas_train, min_salidas_valid
+    )
+    x_train = car_train[columnas]
+    z_train = StandardScaler().fit_transform(x_train)
+    if not np.isfinite(z_train).all():
+        raise ValueError("variables escaladas con valores no finitos")
+
+    resultados_k = p3_buscar_k(z_train, k_minimo, k_maximo, semilla)
+    k_elegido = int(resultados_k["silueta"].idxmax())
+
+    # Modelo base: escalador + K-Means con el k elegido (un solo objeto para registrar y reutilizar)
+    modelo = Pipeline(
+        [
+            ("escalador", StandardScaler()),
+            ("kmeans", KMeans(n_clusters=k_elegido, n_init=10, random_state=semilla)),
+        ]
+    ).fit(x_train)
+    etiquetas = modelo.named_steps["kmeans"].labels_
+    car_train = car_train.assign(grupo=etiquetas)
+    tamanos = pd.Series(etiquetas).value_counts().sort_index()
+
+    # Estabilidad: reasignación de las estaciones con las variables del año de validación
+    comunes = car_train.index.intersection(car_valid.index)
+    grupo_original = car_train.loc[comunes, "grupo"]
+    grupo_en_valid = p3_reasignar_grupos(modelo, car_valid.loc[comunes], columnas)
+    fila = resultados_k.loc[k_elegido]
+    metricas = {
+        "silueta": float(fila["silueta"]),
+        "davies_bouldin": float(fila["davies_bouldin"]),
+        "calinski_harabasz": float(fila["calinski_harabasz"]),
+        "inercia": float(fila["inercia"]),
+        "ari_valid": p3_estabilidad_ari(grupo_original, grupo_en_valid),
+        "estaciones_train": len(x_train),
+        "estaciones_estabilidad": len(comunes),
+        "estaciones_cambian_de_grupo": int((grupo_original.to_numpy() != grupo_en_valid).sum()),
+        "tam_grupo_min": int(tamanos.min()),
+        "tam_grupo_max": int(tamanos.max()),
+    }
+    return P3Baseline(
+        modelo=modelo,
+        k_elegido=k_elegido,
+        resultados_k=resultados_k,
+        caracteristicas_train=car_train,
+        caracteristicas_valid=car_valid,
+        columnas_modelo=columnas,
+        comunes=comunes,
+        x_train=x_train,
+        z_train=z_train,
+        tamanos=tamanos,
+        metricas=metricas,
+        semilla=semilla,
+        k_minimo=k_minimo,
+        k_maximo=k_maximo,
+        min_salidas_train=min_salidas_train,
+        min_salidas_valid=min_salidas_valid,
+    )
+
+
+def p3_entradas_estabilidad(base: P3Baseline) -> tuple[pd.DataFrame, list[int]]:
+    """Regresa las variables de valid de las estaciones comunes y su posición en train."""
+    x_valid = base.caracteristicas_valid.loc[base.comunes, base.columnas_modelo]
+    posiciones = [base.caracteristicas_train.index.get_loc(e) for e in base.comunes]
+    return x_valid, posiciones
+
+
+def p3_evaluar_modelo(modelo, z_train, x_valid_comunes, posiciones_comunes) -> dict:
+    """Métricas internas en el espacio estandarizado del baseline (`z_train`) y estabilidad.
+
+    El espacio común es lo que permite comparar modelos distintos: la silueta de un modelo
+    medida en su propio espacio (por ejemplo, tras un PCA) no es comparable con la del baseline.
+    """
+    etiquetas = modelo.named_steps["kmeans"].labels_
+    en_valid = modelo.predict(x_valid_comunes)
+    return {
+        "silueta": silhouette_score(z_train, etiquetas),
+        "davies_bouldin": davies_bouldin_score(z_train, etiquetas),
+        "calinski_harabasz": calinski_harabasz_score(z_train, etiquetas),
+        "tam_min": int(np.bincount(etiquetas).min()),
+        "ari_valid": p3_estabilidad_ari(etiquetas[posiciones_comunes], en_valid),
+    }
+
+
+def p3_baseline_por_k(base: P3Baseline) -> pd.DataFrame:
+    """Baseline para cada `k`, evaluado en el mismo espacio y con la misma prueba de estabilidad."""
+    x_valid, posiciones = p3_entradas_estabilidad(base)
+    filas = []
+    for k in range(base.k_minimo, base.k_maximo + 1):
+        modelo_k = Pipeline(
+            [
+                ("escalador", StandardScaler()),
+                ("kmeans", KMeans(n_clusters=k, n_init=10, random_state=base.semilla)),
+            ]
+        ).fit(base.x_train)
+        filas.append({"k": k, **p3_evaluar_modelo(modelo_k, base.z_train, x_valid, posiciones)})
+    return pd.DataFrame(filas).set_index("k")
+
+
+def p3_tabla_mapa(caracteristicas: pd.DataFrame, nomenclatura: pd.DataFrame) -> pd.DataFrame:
+    """Une las variables por estación con nombre y ubicación (para el mapa y la asignación)."""
+    return caracteristicas.join(nomenclatura.set_index("id")[["name", "latitude", "longitude"]])
+
+
+def p3_resumir_grupos(caracteristicas: pd.DataFrame, nomenclatura: pd.DataFrame) -> pd.DataFrame:
+    """Características medianas de cada grupo del baseline (volumen, balance, duración…)."""
+    return (
+        caracteristicas.join(nomenclatura.set_index("id")[["dpcapacity", "latitude", "longitude"]])
+        .groupby("grupo")
+        .agg(
+            estaciones=("salidas", "size"),
+            salidas_medianas=("salidas", "median"),
+            viajes_por_dia=("log_viajes_por_dia", lambda s: np.expm1(s).median()),
+            neto_sobre_salidas=("neto_sobre_salidas", "median"),
+            prop_circulares=("prop_circulares", "median"),
+            duracion_mediana_min=("duracion_mediana_min", "median"),
+            capacidad_mediana=("dpcapacity", "median"),
+        )
+        .round(3)
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# Modelo alternativo: pesos por bloque (opcional) + PCA + K-Means
+# ---------------------------------------------------------------------------------------------
+
+
+def p3_pesos_por_bloque(columnas: list[str]) -> np.ndarray:
+    """Peso por columna para que cada bloque (laboral, fin de semana, indicadores) aporte la
+    misma varianza total."""
+    bloque = pd.Series(
+        [
+            "lab" if c.startswith("lab_") else "fin" if c.startswith("fin_") else "esc"
+            for c in columnas
+        ]
+    )
+    return (1 / np.sqrt(bloque.map(bloque.value_counts()))).to_numpy()
+
+
+def p3_aplicar_pesos(matriz, pesos):
+    """Multiplica cada columna por su peso. Vive a nivel de módulo (no en un notebook) para que
+    el modelo registrado en MLflow pueda cargarse sin depender de `__main__`."""
+    return matriz * pesos
+
+
+def p3_construir_modelo(
+    columnas_modelo: list[str], componentes: int, ponderar: bool, k: int, semilla: int
+) -> Pipeline:
+    """Escalador, pesos por bloque (opcional), PCA y K-Means en un solo objeto."""
+    pasos = [("escalador", StandardScaler())]
+    if ponderar:
+        # Sin pesos no se agrega el paso: el modelo registrado no depende de funciones propias
+        pasos.append(
+            (
+                "pesos",
+                FunctionTransformer(
+                    p3_aplicar_pesos, kw_args={"pesos": p3_pesos_por_bloque(columnas_modelo)}
+                ),
+            )
+        )
+    pasos += [
+        ("pca", PCA(n_components=componentes, random_state=semilla)),
+        ("kmeans", KMeans(n_clusters=k, n_init=10, random_state=semilla)),
+    ]
+    return Pipeline(pasos)
+
+
+def p3_semillas_busqueda(semilla: int, cantidad: int) -> list[int]:
+    """La semilla del proyecto primero y después 1, 2, 3… hasta completar `cantidad`."""
+    otras = [s for s in range(1, cantidad + 100) if s != semilla]
+    return ([semilla] + otras)[: max(cantidad, 1)]
+
+
+def p3_buscar_alternativo(
+    base: P3Baseline,
+    componentes: list[int] = cfg.P3_COMPONENTES,
+    ks=P3_K_ALTERNATIVO,
+    n_semillas: int = cfg.P3_SEMILLAS_BUSQUEDA,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Prueba con y sin pesos por bloque, cada número de componentes y de grupos, con varias
+    semillas. Regresa (todas las corridas, una fila por configuración con el promedio)."""
+    x_valid, posiciones = p3_entradas_estabilidad(base)
+    filas = []
+    for ponderar in (False, True):
+        for n_comp in componentes:
+            for k in ks:
+                for semilla in p3_semillas_busqueda(base.semilla, n_semillas):
+                    modelo = p3_construir_modelo(
+                        base.columnas_modelo, n_comp, ponderar, k, semilla
+                    )
+                    modelo.fit(base.x_train)
+                    filas.append(
+                        {
+                            "ponderar": ponderar,
+                            "componentes": n_comp,
+                            "k": k,
+                            "semilla": semilla,
+                            **p3_evaluar_modelo(modelo, base.z_train, x_valid, posiciones),
+                        }
+                    )
+    busqueda = pd.DataFrame(filas)
+    # Una fila por configuración: promedio entre semillas (el peor caso en el tamaño mínimo)
+    resumen = (
+        busqueda.groupby(["ponderar", "componentes", "k"])
+        .agg(
+            silueta=("silueta", "mean"),
+            silueta_min=("silueta", "min"),
+            davies_bouldin=("davies_bouldin", "mean"),
+            calinski_harabasz=("calinski_harabasz", "mean"),
+            ari_valid=("ari_valid", "mean"),
+            ari_min=("ari_valid", "min"),
+            tam_min=("tam_min", "min"),
+        )
+        .reset_index()
+    )
+    return busqueda, resumen
+
+
+def p3_seleccionar_alternativo(
+    resumen: pd.DataFrame,
+    ari_baseline: float,
+    tam_min_aceptable: int = cfg.P3_TAM_MIN_ACEPTABLE,
+) -> tuple[pd.Series, pd.DataFrame, pd.DataFrame]:
+    """Elige la configuración de mayor silueta entre las que cumplen estabilidad y tamaño mínimo.
+
+    Regresa (elegida, las que cumplen, el conjunto del que se eligió). Si ninguna cumple se elige
+    entre todas, y los criterios de aceptación lo dejarán como no aceptado.
+    """
+    cumplen = resumen[
+        (resumen["tam_min"] >= tam_min_aceptable) & (resumen["ari_valid"] >= ari_baseline)
+    ]
+    reserva = cumplen if len(cumplen) else resumen
+    elegido = reserva.sort_values(["silueta", "componentes"], ascending=[False, True]).iloc[0]
+    return elegido, cumplen, reserva
+
+
+def p3_evaluar_criterios(
+    elegido: pd.Series, metricas_baseline: dict, tam_min_aceptable: int = cfg.P3_TAM_MIN_ACEPTABLE
+) -> tuple[dict[str, bool], bool]:
+    """Criterios de aceptación acordados antes de ver los resultados.
+
+    Regresa (criterio -> cumple, aceptado). Falta el cuarto criterio (que cada grupo se pueda
+    nombrar), que es cualitativo y se evalúa en la interpretación.
+    """
+    criterios = {
+        f"Silueta > baseline ({metricas_baseline['silueta']:.3f})": bool(
+            elegido["silueta"] > metricas_baseline["silueta"]
+        ),
+        f"ARI de estabilidad >= baseline ({metricas_baseline['ari_valid']:.3f})": bool(
+            elegido["ari_valid"] >= metricas_baseline["ari_valid"]
+        ),
+        f"Tamaño mínimo de grupo >= {tam_min_aceptable}": bool(
+            elegido["tam_min"] >= tam_min_aceptable
+        ),
+    }
+    return criterios, all(criterios.values())
+
+
+@dataclass
+class P3Alternativo:
+    """Resultado del modelo alternativo y su comparación contra el baseline."""
+
+    base: P3Baseline
+    busqueda: pd.DataFrame
+    resumen_busqueda: pd.DataFrame
+    cumplen: pd.DataFrame
+    reserva: pd.DataFrame
+    elegido: pd.Series
+    modelo: Pipeline
+    etiquetas: np.ndarray
+    metricas_alt: dict
+    varianza_pca: float
+    k_alt: int
+    baseline_por_k: pd.DataFrame
+    comparacion: pd.DataFrame
+    criterios: dict
+    aceptado: bool
+    n_semillas: int
+
+
+def p3_entrenar_alternativo(
+    base: P3Baseline,
+    componentes: list[int] = cfg.P3_COMPONENTES,
+    n_semillas: int = cfg.P3_SEMILLAS_BUSQUEDA,
+    tam_min_aceptable: int = cfg.P3_TAM_MIN_ACEPTABLE,
+) -> P3Alternativo:
+    """Busca, elige, ajusta y compara el modelo alternativo contra el baseline."""
+    baseline_por_k = p3_baseline_por_k(base)
+    busqueda, resumen = p3_buscar_alternativo(base, componentes, n_semillas=n_semillas)
+    elegido, cumplen, reserva = p3_seleccionar_alternativo(
+        resumen, base.metricas["ari_valid"], tam_min_aceptable
+    )
+    logger.info(
+        f"Configuraciones evaluadas: {len(resumen)} | que cumplen ARI y tamaño mínimo: {len(cumplen)}"
+    )
+    logger.info(
+        "Configuración elegida: "
+        f"{{'ponderar': {bool(elegido['ponderar'])}, 'componentes': {int(elegido['componentes'])}, "
+        f"'k': {int(elegido['k'])}}}"
+    )
+
+    k_alt = int(elegido["k"])
+    modelo = p3_construir_modelo(
+        base.columnas_modelo,
+        int(elegido["componentes"]),
+        bool(elegido["ponderar"]),
+        k_alt,
+        base.semilla,
+    ).fit(base.x_train)
+    x_valid, posiciones = p3_entradas_estabilidad(base)
+    metricas_alt = p3_evaluar_modelo(modelo, base.z_train, x_valid, posiciones)
+    varianza_pca = float(modelo.named_steps["pca"].explained_variance_ratio_.sum())
+
+    comparacion = pd.DataFrame(
+        {
+            f"baseline (k={base.k_elegido})": baseline_por_k.loc[base.k_elegido],
+            f"baseline (k={k_alt})": baseline_por_k.loc[k_alt],
+            f"alternativo (k={k_alt}, promedio de {n_semillas} semillas)": pd.Series(
+                {
+                    "silueta": elegido["silueta"],
+                    "davies_bouldin": elegido["davies_bouldin"],
+                    "calinski_harabasz": elegido["calinski_harabasz"],
+                    "ari_valid": elegido["ari_valid"],
+                    "tam_min": elegido["tam_min"],
+                }
+            ),
+            f"alternativo (k={k_alt}, semilla {base.semilla})": pd.Series(metricas_alt),
+        }
+    ).T[["silueta", "davies_bouldin", "calinski_harabasz", "ari_valid", "tam_min"]]
+
+    criterios, aceptado = p3_evaluar_criterios(elegido, base.metricas, tam_min_aceptable)
+    for nombre, cumple in criterios.items():
+        logger.info(("CUMPLE    " if cumple else "NO CUMPLE ") + nombre)
+    logger.info(
+        "Veredicto cuantitativo: "
+        + ("ACEPTADO" if aceptado else "NO ACEPTADO: el baseline sigue siendo el piso")
+    )
+    logger.info(
+        f"Varianza explicada por los {int(elegido['componentes'])} componentes: {varianza_pca:.1%}"
+    )
+    logger.info(
+        f"Silueta entre semillas: min {elegido['silueta_min']:.3f}, promedio {elegido['silueta']:.3f}"
+    )
+    logger.info(
+        f"ARI entre semillas: min {elegido['ari_min']:.3f}, promedio {elegido['ari_valid']:.3f}"
+    )
+
+    return P3Alternativo(
+        base=base,
+        busqueda=busqueda,
+        resumen_busqueda=resumen,
+        cumplen=cumplen,
+        reserva=reserva,
+        elegido=elegido,
+        modelo=modelo,
+        etiquetas=modelo.named_steps["kmeans"].labels_,
+        metricas_alt=metricas_alt,
+        varianza_pca=varianza_pca,
+        k_alt=k_alt,
+        baseline_por_k=baseline_por_k,
+        comparacion=comparacion,
+        criterios=criterios,
+        aceptado=aceptado,
+        n_semillas=n_semillas,
+    )
+
+
+def p3_asignacion_alternativo(alt: P3Alternativo, nomenclatura: pd.DataFrame) -> pd.DataFrame:
+    """Variables por estación con el grupo del modelo alternativo, nombre, ubicación y el % de
+    salidas laborales de mañana (6 a 9 h) y de tarde (17 a 20 h)."""
+    asignacion = (
+        alt.base.caracteristicas_train.drop(columns="grupo")
+        .assign(grupo_alt=alt.etiquetas)
+        .join(nomenclatura.set_index("id")[["name", "dpcapacity", "latitude", "longitude"]])
+    )
+    asignacion["pct_manana"] = asignacion[HORAS_MANANA].sum(axis=1) * 100
+    asignacion["pct_tarde"] = asignacion[HORAS_TARDE].sum(axis=1) * 100
+    return asignacion
+
+
+def p3_resumir_alternativo(asignacion: pd.DataFrame) -> pd.DataFrame:
+    """Características medianas de cada grupo del modelo alternativo."""
+    return (
+        asignacion.groupby("grupo_alt")
+        .agg(
+            estaciones=("salidas", "size"),
+            pct_salidas_6_a_9h=("pct_manana", "median"),
+            pct_salidas_17_a_20h=("pct_tarde", "median"),
+            viajes_por_dia=("log_viajes_por_dia", lambda s: np.expm1(s).median()),
+            neto_sobre_salidas=("neto_sobre_salidas", "median"),
+            prop_circulares=("prop_circulares", "median"),
+            duracion_mediana_min=("duracion_mediana_min", "median"),
+            capacidad_mediana=("dpcapacity", "median"),
+        )
+        .round(3)
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# Registro en MLflow y utilidades para CI
+# ---------------------------------------------------------------------------------------------
+
+
+def p3_nombre_run(base: str) -> str:
+    """Nombre del run: `<MLFLOW_RUN_NAME>-<base>` si la variable existe; si no, solo `base`."""
+    return f"{cfg.MLFLOW_RUN_NAME}-{base}" if cfg.MLFLOW_RUN_NAME else base
+
+
+def p3_commit_actual() -> str:
+    """Commit corto: GITHUB_SHA en CI; si no, `git rev-parse`; si no, `desconocido`."""
+    if os.environ.get("GITHUB_SHA"):
+        return os.environ["GITHUB_SHA"][:7]
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=cfg.PROJ_ROOT, text=True
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return "desconocido"
+
+
+def p3_etiquetas_ci() -> dict[str, str]:
+    """Etiquetas de GitHub Actions presentes en el entorno (vacío fuera de CI)."""
+    variables = {
+        "github_run_id": "GITHUB_RUN_ID",
+        "github_actor": "GITHUB_ACTOR",
+        "github_ref_name": "GITHUB_REF_NAME",
+        "github_sha": "GITHUB_SHA",
+    }
+    return {etiqueta: os.environ[v] for etiqueta, v in variables.items() if os.environ.get(v)}
+
+
+def p3_escribir_resumen_ci(titulo: str, valores: dict) -> None:
+    """Agrega una tabla de métricas al resumen del job (GITHUB_STEP_SUMMARY), si existe."""
+    ruta = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not ruta:
+        return
+    filas = [f"### {titulo}", "", "| métrica | valor |", "|---|---|"]
+    for nombre, valor in valores.items():
+        texto = f"{valor:.4f}" if isinstance(valor, float) else str(valor)
+        filas.append(f"| {nombre} | {texto} |")
+    with open(ruta, "a", encoding="utf-8") as archivo:
+        archivo.write("\n".join(filas) + "\n\n")
+
+
+def p3_registrar_en_mlflow(
+    nombre_run: str,
+    etiquetas: dict,
+    parametros: dict,
+    metricas: dict,
+    series: dict[str, pd.Series] | None = None,
+    artefactos: list[Path] = (),
+    carpeta_artefactos: str = "p3",
+    modelo=None,
+    ejemplo=None,
+    skops_trusted_types: list[str] | None = None,
+    de_nuevo: bool = False,
+    experimento: str = cfg.P3_EXPERIMENTO,
+    uri: str | None = None,
+) -> str:
+    """Registra un run en MLflow y regresa su URL. Es idempotente.
+
+    Si ya existe un run terminado con ese nombre en el experimento, no crea otro (salvo
+    `de_nuevo`), para no duplicar corridas al re-ejecutar. Un run que quedó a medias no cuenta.
+    """
+    import mlflow
+    import mlflow.sklearn
+
+    uri = uri or cfg.MLFLOW_TRACKING_URI
+    if not uri:
+        raise ValueError("MLFLOW_TRACKING_URI no está definida (variable de entorno o .env)")
+    mlflow.set_tracking_uri(uri)
+
+    # El experimento debe guardar los artefactos por el proxy del servidor (mlflow-artifacts:/);
+    # si apunta a una ruta local del servidor, el cliente no puede escribir en ella.
+    existente = mlflow.get_experiment_by_name(experimento)
+    if existente is None:
+        mlflow.create_experiment(experimento, artifact_location="mlflow-artifacts:/" + experimento)
+        existente = mlflow.get_experiment_by_name(experimento)
+    if not existente.artifact_location.startswith("mlflow-artifacts:"):
+        raise RuntimeError(
+            "El experimento no usa el proxy de artefactos: " + existente.artifact_location
+        )
+    url_base = f"{uri.rstrip('/')}/#/experiments/{existente.experiment_id}/runs/"
+
+    corridas = mlflow.search_runs(
+        experiment_ids=[existente.experiment_id],
+        filter_string=f"tags.mlflow.runName = '{nombre_run}' and attributes.status = 'FINISHED'",
+    )
+    if len(corridas) and not de_nuevo:
+        url = url_base + str(corridas.iloc[0]["run_id"])
+        logger.info(f"Ya existe un run '{nombre_run}' en el experimento '{experimento}': {url}")
+        return url
+
+    mlflow.set_experiment(experimento)
+    with mlflow.start_run(run_name=nombre_run) as corrida:
+        mlflow.set_tags({**etiquetas, **p3_etiquetas_ci()})
+        mlflow.log_params(parametros)
+        for nombre, serie in (series or {}).items():
+            for paso, valor in serie.items():
+                mlflow.log_metric(nombre, float(valor), step=int(paso))
+        mlflow.log_metrics(metricas)
+        for ruta in artefactos:
+            mlflow.log_artifact(str(ruta), artifact_path=carpeta_artefactos)
+        if modelo is not None:
+            opciones = {"skops_trusted_types": skops_trusted_types} if skops_trusted_types else {}
+            mlflow.sklearn.log_model(modelo, name="modelo", input_example=ejemplo, **opciones)
+    url = url_base + corrida.info.run_id
+    logger.success(f"Run registrado: {url}")
+    return url
+
+
+def p3_parametros_comunes(base: P3Baseline) -> dict:
+    """Parámetros de datos y filtros que comparten los runs del baseline y del alternativo."""
+    return {
+        "semilla": base.semilla,
+        "rango_datos": f"{cfg.MES_INICIO} a {cfg.MES_FIN}",
+        "periodo_train": "2020-01-01 a 2024-09-29",
+        "periodo_estabilidad": "2024-10-01 a 2025-09-29",
+        "min_salidas_train": base.min_salidas_train,
+        "min_salidas_valid": base.min_salidas_valid,
+        "n_variables": len(base.columnas_modelo),
+        "data_version": dataset.version_datos(),
+    }
+
+
+def p3_guardar_artefactos_baseline(
+    base: P3Baseline, nomenclatura: pd.DataFrame, carpeta: Path = cfg.FIGURES_DIR
+) -> list[Path]:
+    """Guarda en `carpeta` la asignación por estación, el resumen, las variables y 2 gráficas."""
+    carpeta.mkdir(parents=True, exist_ok=True)
+    mapa = p3_tabla_mapa(base.caracteristicas_train, nomenclatura)
+    asignacion = mapa[["name", "latitude", "longitude", "grupo", "salidas"]].rename(
+        columns={"name": "estacion", "salidas": "salidas_train"}
+    )
+    rutas = [carpeta / "p3_asignacion_grupos.csv", carpeta / "p3_resumen_grupos.csv"]
+    asignacion.to_csv(rutas[0], index_label="estacion_id")
+    p3_resumir_grupos(base.caracteristicas_train, nomenclatura).to_csv(rutas[1])
+    rutas.append(carpeta / "p3_variables.json")
+    rutas[2].write_text(json.dumps(base.columnas_modelo, ensure_ascii=False, indent=1))
+    fig_k = plots.p3_grafica_silueta_por_k(base.resultados_k, base.k_elegido)
+    rutas.append(plots.p3_guardar_figura(fig_k, carpeta / "p3_silueta_por_k.png"))
+    fig_m = plots.p3_grafica_mapa_grupos(
+        mapa, base.k_elegido, "Estaciones por grupo (baseline)", 1.0
+    )
+    rutas.append(plots.p3_guardar_figura(fig_m, carpeta / "p3_mapa_grupos.png"))
+    return rutas
+
+
+def p3_registrar_baseline(
+    base: P3Baseline,
+    nomenclatura: pd.DataFrame,
+    de_nuevo: bool = cfg.P3_REGISTRAR_DE_NUEVO,
+    origen: str = "modulo",
+) -> str:
+    """Guarda los artefactos del baseline y registra el run `baseline` en MLflow."""
+    artefactos = p3_guardar_artefactos_baseline(base, nomenclatura)
+    parametros = {
+        "modelo": "StandardScaler + KMeans",
+        "k": base.k_elegido,
+        "k_minimo": base.k_minimo,
+        "k_maximo": base.k_maximo,
+        "n_init": 10,
+        "horas_excluidas": "1-4",
+        **p3_parametros_comunes(base),
+    }
+    etiquetas = {
+        "equipo": "7",
+        "pregunta": "P3",
+        "tarea": "clustering",
+        "autor": "lasd",
+        "commit": p3_commit_actual(),
+        "origen": origen,
+        "etapa": "baseline",
+    }
+    return p3_registrar_en_mlflow(
+        nombre_run=p3_nombre_run("baseline"),
+        etiquetas=etiquetas,
+        parametros=parametros,
+        metricas=base.metricas,
+        series={"silueta_por_k": base.resultados_k["silueta"]},
+        artefactos=artefactos,
+        modelo=base.modelo,
+        ejemplo=base.x_train.head(3),
+        de_nuevo=de_nuevo,
+    )
+
+
+def p3_guardar_artefactos_alternativo(
+    alt: P3Alternativo, nomenclatura: pd.DataFrame, carpeta: Path = cfg.FIGURES_DIR
+) -> list[Path]:
+    """Guarda en `carpeta` la asignación, el resumen, la búsqueda, la comparación y la figura."""
+    base = alt.base
+    asignacion = p3_asignacion_alternativo(alt, nomenclatura)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    tablas = {
+        "p3_pca_asignacion_grupos.csv": asignacion[
+            ["name", "latitude", "longitude", "grupo_alt", "salidas"]
+        ].rename(columns={"name": "estacion", "salidas": "salidas_train"}),
+        "p3_pca_resumen_grupos.csv": p3_resumir_alternativo(asignacion),
+        "p3_pca_busqueda.csv": alt.resumen_busqueda,
+        "p3_pca_comparacion.csv": alt.comparacion,
+    }
+    artefactos = []
+    for nombre, tabla in tablas.items():
+        tabla.to_csv(carpeta / nombre, index_label="id")
+        artefactos.append(carpeta / nombre)
+    figura = plots.p3_grafica_perfiles_y_mapa(
+        asignacion,
+        alt.k_alt,
+        [c for c in base.columnas_modelo if c.startswith("lab_")],
+        [c for c in base.columnas_modelo if c.startswith("fin_")],
+        cfg.P3_HORAS_SERVICIO,
+    )
+    artefactos.append(plots.p3_guardar_figura(figura, carpeta / "p3_pca_perfiles_mapa.png"))
+    return artefactos
+
+
+def p3_registrar_alternativo(
+    alt: P3Alternativo,
+    nomenclatura: pd.DataFrame,
+    de_nuevo: bool = cfg.P3_REGISTRAR_DE_NUEVO,
+    origen: str = "modulo",
+    carpeta: Path = cfg.FIGURES_DIR,
+) -> str:
+    """Guarda los artefactos del modelo alternativo y registra el run `pca_kmeans` en MLflow.
+
+    Se registra aunque no se acepte: un resultado negativo también es evidencia.
+    """
+    base = alt.base
+    artefactos = p3_guardar_artefactos_alternativo(alt, nomenclatura, carpeta)
+
+    elegido = alt.elegido
+    ponderar = bool(elegido["ponderar"])
+    parametros = {
+        "modelo": "StandardScaler + pesos por bloque + PCA + KMeans"
+        if ponderar
+        else "StandardScaler + PCA + KMeans",
+        "ponderar_bloques": ponderar,
+        "componentes": int(elegido["componentes"]),
+        "k": alt.k_alt,
+        "n_init": 10,
+        "semillas_busqueda": alt.n_semillas,
+        **p3_parametros_comunes(base),
+    }
+    metricas = {
+        "silueta": float(elegido["silueta"]),
+        "silueta_min_semillas": float(elegido["silueta_min"]),
+        "silueta_semilla_proyecto": float(alt.metricas_alt["silueta"]),
+        "davies_bouldin": float(elegido["davies_bouldin"]),
+        "calinski_harabasz": float(alt.metricas_alt["calinski_harabasz"]),
+        "ari_valid": float(elegido["ari_valid"]),
+        "tam_grupo_min": int(elegido["tam_min"]),
+        "varianza_pca": alt.varianza_pca,
+        "delta_silueta_vs_baseline": float(elegido["silueta"] - base.metricas["silueta"]),
+        "delta_ari_vs_baseline": float(elegido["ari_valid"] - base.metricas["ari_valid"]),
+    }
+    etiquetas = {
+        "equipo": "7",
+        "pregunta": "P3",
+        "tarea": "clustering",
+        "autor": "lasd",
+        "commit": p3_commit_actual(),
+        "origen": origen,
+        "etapa": "alternativo",
+        "aceptado": str(alt.aceptado).lower(),
+        "referencia": p3_nombre_run("baseline"),
+    }
+    return p3_registrar_en_mlflow(
+        nombre_run=p3_nombre_run("pca_kmeans"),
+        etiquetas=etiquetas,
+        parametros=parametros,
+        metricas=metricas,
+        artefactos=artefactos,
+        modelo=alt.modelo,
+        ejemplo=base.x_train.head(3),
+        skops_trusted_types=(
+            ["tc5061_proyecto_equipo07.modeling.train.p3_aplicar_pesos"] if ponderar else None
+        ),
+        de_nuevo=de_nuevo,
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# Comandos
+# ---------------------------------------------------------------------------------------------
+
+
+def p3_cargar_modelado(mes_inicio: str, mes_fin: str) -> pd.DataFrame:
+    """Lee data/processed/viajes_modelado_*.parquet (viajes limpios con partición)."""
+    ruta = dataset.p3_ruta_viajes_modelado(mes_inicio, mes_fin)
+    if not ruta.exists():
+        raise FileNotFoundError(f"Falta {ruta.name}; ejecutar `make data` y `p3-particionar`")
+    return pd.read_parquet(ruta)
+
+
+@app.callback()
+def p3_ayuda_train():
+    """Entrenamiento de P3: modelo base y modelo alternativo."""
+
+
+@app.command()
+def p3_baseline(
+    mes_inicio: str = cfg.MES_INICIO,
+    mes_fin: str = cfg.MES_FIN,
+    semilla: int = typer.Option(cfg.P3_SEMILLA, envvar="P3_SEMILLA"),
+    k_minimo: int = typer.Option(cfg.P3_K_MINIMO, envvar="P3_K_MINIMO"),
+    k_maximo: int = typer.Option(cfg.P3_K_MAXIMO, envvar="P3_K_MAXIMO"),
+    min_salidas_train: int = typer.Option(cfg.P3_MIN_SALIDAS_TRAIN, envvar="P3_MIN_SALIDAS_TRAIN"),
+    min_salidas_valid: int = typer.Option(cfg.P3_MIN_SALIDAS_VALID, envvar="P3_MIN_SALIDAS_VALID"),
+    registrar: bool = typer.Option(cfg.P3_REGISTRAR_MLFLOW, envvar="P3_REGISTRAR_MLFLOW"),
+    de_nuevo: bool = typer.Option(cfg.P3_REGISTRAR_DE_NUEVO, envvar="P3_REGISTRAR_DE_NUEVO"),
+):
+    """Entrena y evalúa el modelo base; con --registrar lo registra en MLflow."""
+    limpios = p3_cargar_modelado(mes_inicio, mes_fin)
+    base = p3_ajustar_baseline(
+        limpios, semilla, k_minimo, k_maximo, min_salidas_train, min_salidas_valid
+    )
+    logger.info(f"k elegido por silueta: {base.k_elegido} | grupos: {base.tamanos.to_dict()}")
+    logger.info(
+        f"silueta {base.metricas['silueta']:.3f} | Davies-Bouldin {base.metricas['davies_bouldin']:.3f}"
+        f" | ARI de estabilidad {base.metricas['ari_valid']:.3f}"
+    )
+    p3_escribir_resumen_ci("P3 baseline", {"k": base.k_elegido, **base.metricas})
+    nomenclatura = dataset.p3_cargar_estaciones()
+    if registrar:
+        p3_registrar_baseline(base, nomenclatura, de_nuevo, origen="cli")
+    else:
+        p3_guardar_artefactos_baseline(base, nomenclatura)
+        logger.info("Registro en MLflow desactivado (P3_REGISTRAR_MLFLOW=false)")
+
+
+@app.command()
+def p3_alternativo(
+    mes_inicio: str = cfg.MES_INICIO,
+    mes_fin: str = cfg.MES_FIN,
+    semilla: int = typer.Option(cfg.P3_SEMILLA, envvar="P3_SEMILLA"),
+    k_minimo: int = typer.Option(cfg.P3_K_MINIMO, envvar="P3_K_MINIMO"),
+    k_maximo: int = typer.Option(cfg.P3_K_MAXIMO, envvar="P3_K_MAXIMO"),
+    min_salidas_train: int = typer.Option(cfg.P3_MIN_SALIDAS_TRAIN, envvar="P3_MIN_SALIDAS_TRAIN"),
+    min_salidas_valid: int = typer.Option(cfg.P3_MIN_SALIDAS_VALID, envvar="P3_MIN_SALIDAS_VALID"),
+    n_semillas: int = typer.Option(cfg.P3_SEMILLAS_BUSQUEDA, envvar="P3_SEMILLAS_BUSQUEDA"),
+    registrar: bool = typer.Option(cfg.P3_REGISTRAR_MLFLOW, envvar="P3_REGISTRAR_MLFLOW"),
+    de_nuevo: bool = typer.Option(cfg.P3_REGISTRAR_DE_NUEVO, envvar="P3_REGISTRAR_DE_NUEVO"),
+    exigir_aceptacion: bool = typer.Option(
+        cfg.P3_EXIGIR_ACEPTACION, envvar="P3_EXIGIR_ACEPTACION"
+    ),
+):
+    """Busca, evalúa y compara el modelo alternativo contra el baseline.
+
+    El baseline se recalcula con la misma semilla (es determinista), así que la comparación es
+    contra exactamente el mismo resultado. Con --exigir-aceptacion sale con error si no se acepta.
+    """
+    limpios = p3_cargar_modelado(mes_inicio, mes_fin)
+    base = p3_ajustar_baseline(
+        limpios, semilla, k_minimo, k_maximo, min_salidas_train, min_salidas_valid
+    )
+    alt = p3_entrenar_alternativo(base, n_semillas=n_semillas)
+    p3_escribir_resumen_ci(
+        "P3 modelo alternativo",
+        {
+            "aceptado": alt.aceptado,
+            "k": alt.k_alt,
+            "silueta (promedio de semillas)": float(alt.elegido["silueta"]),
+            "silueta baseline": base.metricas["silueta"],
+            "ari_valid": float(alt.elegido["ari_valid"]),
+            "ari baseline": base.metricas["ari_valid"],
+            "tam_min": int(alt.elegido["tam_min"]),
+        },
+    )
+    nomenclatura = dataset.p3_cargar_estaciones()
+    if registrar:
+        p3_registrar_alternativo(alt, nomenclatura, de_nuevo, origen="cli")
+    else:
+        p3_guardar_artefactos_alternativo(alt, nomenclatura)
+        logger.info("Registro en MLflow desactivado (P3_REGISTRAR_MLFLOW=false)")
+    if exigir_aceptacion and not alt.aceptado:
+        logger.error("El modelo alternativo no cumple los criterios de aceptación")
+        raise typer.Exit(code=1)
+
+
+if __name__ == "__main__":
+    # Se importa con su nombre real: si los comandos corrieran como `__main__`, los objetos que se
+    # serializan (modelo en MLflow) apuntarían a `__main__.p3_aplicar_pesos` y no se podrían cargar.
+    from tc5061_proyecto_equipo07.modeling.train import app as app_real
+
+    app_real()

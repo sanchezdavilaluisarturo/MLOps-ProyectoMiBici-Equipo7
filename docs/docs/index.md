@@ -1,4 +1,4 @@
-# MLOps-ProyectoMiBici-Equipo7 documentation!
+# Equipo 7 - MLOps - TC5061 documentation!
 
 ## Description
 
