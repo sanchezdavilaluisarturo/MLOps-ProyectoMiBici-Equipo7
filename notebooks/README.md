@@ -17,10 +17,10 @@ Se ejecutan en este orden, desde esta carpeta. Cada uno **llama** al módulo `tc
 
 | Notebook | Paso | Código del módulo que usa |
 |---|---|---|
-| `0.03-lasd-exploracion-carga` | 1. Carga y descripción | `dataset.p3_cargar_viajes`, `dataset.p3_meses_sin_datos` |
-| `0.05-lasd-eda-p3` | 2. EDA | `dataset.p3_cargar_estaciones`, `features.p3_variables_de_tiempo`, `plots.p3_grafica_*` |
-| `0.06-lasd-limpieza-p3` | 3. Limpieza, partición y preprocesamiento | `dataset.limpiar`, `dataset.p3_preparar_modelado`, `features.p3_tabla_estaciones`, `features.p3_demanda_estacion_hora` |
-| `0.07-lasd-baseline-p3` | 4. Modelo base | `train.p3_ajustar_baseline`, `train.p3_registrar_baseline` |
-| `0.08-lasd-mejoramodelo-p3` | 4. Modelo alternativo | `train.p3_entrenar_alternativo`, `train.p3_registrar_alternativo` |
+| `0.01-lasd-exploracion-carga` | 1. Carga y descripción | `dataset.p3_cargar_viajes`, `dataset.p3_meses_sin_datos` |
+| `0.02-lasd-eda-p3` | 2. EDA | `dataset.p3_cargar_estaciones`, `features.p3_variables_de_tiempo`, `plots.p3_grafica_*` |
+| `0.03-lasd-limpieza-p3` | 3. Limpieza, partición y preprocesamiento | `dataset.limpiar`, `dataset.p3_preparar_modelado`, `features.p3_tabla_estaciones`, `features.p3_demanda_estacion_hora` |
+| `0.04-lasd-baseline-p3` | 4. Modelo base | `train.p3_ajustar_baseline`, `train.p3_registrar_baseline` |
+| `0.05-lasd-mejoramodelo-p3` | 4. Modelo alternativo | `train.p3_entrenar_alternativo`, `train.p3_registrar_alternativo` |
 
 **Convención:** toda función nueva de P3 se llama `p3_<nombre>`. Los parámetros y el registro en MLflow se controlan con variables de entorno (`P3_*`, `MLFLOW_TRACKING_URI`, `MLFLOW_RUN_NAME`); ver la sección *Datos, features y entrenamiento de P3* del README principal. Las celdas de MLflow no escriben en el servidor salvo que se defina `P3_REGISTRAR_MLFLOW=true`.
