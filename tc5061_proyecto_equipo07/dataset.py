@@ -16,11 +16,13 @@ import time
 from urllib.parse import urljoin
 
 from loguru import logger
+import numpy as np
 import pandas as pd
 import requests
 from tqdm import tqdm
 import typer
 
+from tc5061_proyecto_equipo07 import config as cfg
 from tc5061_proyecto_equipo07.config import (
     COLUMNAS_NORMALIZADAS,
     COLUMNAS_VIAJES,
@@ -278,6 +280,158 @@ def todo(mes_inicio: str = MES_INICIO, mes_fin: str = MES_FIN):
     descargar(mes_inicio, mes_fin)
     construir(mes_inicio, mes_fin)
     limpiar(mes_inicio, mes_fin)
+
+
+# ---------------------------------------------------------------------------------------------
+# P3 (clustering de estaciones): carga de las entradas y partición temporal.
+# Se agregan sin tocar lo anterior; toda función nueva lleva el prefijo p3_.
+# ---------------------------------------------------------------------------------------------
+
+
+def p3_ruta_viajes_modelado(mes_inicio: str = MES_INICIO, mes_fin: str = MES_FIN) -> Path:
+    """Regresa la ruta de data/processed/viajes_modelado_<inicio>_<fin>.parquet."""
+    return PROCESSED_DATA_DIR / f"viajes_modelado_{mes_inicio}_{mes_fin}.parquet"
+
+
+def p3_meses_sin_datos(
+    periodos_en_datos, mes_inicio: str = MES_INICIO, mes_fin: str = MES_FIN
+) -> list[str]:
+    """Regresa los meses 'AAAA-MM' del rango que no están en `periodos_en_datos`.
+
+    Se calculan de los datos y no de una lista fija: si el portal retira o vuelve a publicar un
+    mes, el resultado cambia solo.
+    """
+    presentes = {str(periodo) for periodo in periodos_en_datos}
+    rango = pd.period_range(mes_inicio, mes_fin, freq="M")
+    return [str(periodo) for periodo in rango if str(periodo) not in presentes]
+
+
+def p3_cargar_viajes(
+    mes_inicio: str = MES_INICIO, mes_fin: str = MES_FIN, validar_manifiesto: bool = True
+) -> pd.DataFrame:
+    """Lee el Parquet normalizado de data/interim/ (viajes sin limpiar que deja `construir`).
+
+    Con `validar_manifiesto` se detiene si el número de registros no coincide con el del
+    manifiesto versionado: sería señal de que `construir` quedó desactualizado.
+    """
+    ruta = INTERIM_DATA_DIR / f"viajes_{mes_inicio}_{mes_fin}.parquet"
+    if not ruta.exists():
+        raise FileNotFoundError(f"Falta {ruta.name}; ejecutar `make data`")
+    viajes = pd.read_parquet(ruta)
+    if validar_manifiesto:
+        manifiesto = pd.read_csv(RUTA_MANIFIESTO)
+        es_viaje = manifiesto["archivo"].str.startswith("datos_abiertos")
+        manifiesto = manifiesto[es_viaje & manifiesto["periodo"].between(mes_inicio, mes_fin)]
+        esperados = int(manifiesto["registros"].sum())
+        if len(viajes) != esperados:
+            raise ValueError(
+                f"{ruta.name} tiene {len(viajes):,} registros y el manifiesto indica "
+                f"{esperados:,}; ejecutar `make data`"
+            )
+    return viajes
+
+
+def p3_cargar_estaciones() -> pd.DataFrame:
+    """Regresa la nomenclatura de estaciones más reciente de data/raw/estaciones/."""
+    rutas = list(RUTA_ESTACIONES_CRUDAS.glob("nomenclatura_*.csv"))
+    if not rutas:
+        raise FileNotFoundError(f"No hay nomenclatura en {RUTA_ESTACIONES_CRUDAS}; `make data`")
+    ruta = max(rutas)
+    return pd.read_csv(ruta, encoding=detectar_codificacion(ruta.read_bytes()))
+
+
+def p3_asignar_particion(inicio_del_viaje: pd.Series) -> pd.Series:
+    """Regresa train, valid, test o brecha según el instante de inicio (partición temporal).
+
+    La partición es temporal para que ningún conjunto vea información posterior. Las horas
+    previas a cada frontera (`P3_BRECHA_HORAS`) quedan en `brecha` y no se usan.
+    """
+    frontera_valid = pd.Timestamp(cfg.P3_FRONTERA_VALID)
+    frontera_test = pd.Timestamp(cfg.P3_FRONTERA_TEST)
+    brecha = pd.Timedelta(hours=cfg.P3_BRECHA_HORAS)
+    condiciones = [
+        inicio_del_viaje < frontera_valid - brecha,
+        inicio_del_viaje < frontera_valid,
+        inicio_del_viaje < frontera_test - brecha,
+        inicio_del_viaje < frontera_test,
+    ]
+    # Códigos enteros (int8) en lugar de cadenas: con 27 millones de filas ahorra varios GB
+    categorias = ["train", "valid", "test", "brecha"]
+    codigos = np.select(
+        condiciones, [np.int8(0), np.int8(3), np.int8(1), np.int8(3)], default=np.int8(2)
+    )
+    return pd.Series(
+        pd.Categorical.from_codes(codigos, categories=categorias), index=inicio_del_viaje.index
+    )
+
+
+def p3_preparar_modelado(limpios: pd.DataFrame) -> pd.DataFrame:
+    """Deja los viajes limpios listos para modelar: columnas de modelado y partición temporal.
+
+    Agrega `duracion_min` y conserva solo `P3_COLUMNAS_MODELADO`: `usuario_id`, `genero` y
+    `anio_de_nacimiento` no pasan (son datos personales y ninguna pregunta los usa).
+    """
+    base = [c for c in cfg.P3_COLUMNAS_MODELADO if c != "duracion_min"]
+    modelado = limpios[base].copy()
+    modelado["duracion_min"] = (
+        modelado["fin_del_viaje"] - modelado["inicio_del_viaje"]
+    ).dt.total_seconds() / 60
+    modelado = modelado[cfg.P3_COLUMNAS_MODELADO]
+    modelado["particion"] = p3_asignar_particion(modelado["inicio_del_viaje"])
+    return modelado
+
+
+def p3_validar_modelado(
+    modelado: pd.DataFrame,
+    estaciones: pd.DataFrame,
+    duracion_maxima_min: float = DURACION_MAXIMA_MIN,
+) -> None:
+    """Se detiene con ValueError si el dataset de modelado incumple alguna regla de limpieza.
+
+    Reglas: `viaje_id` único, estaciones con nomenclatura, duración en (0, máximo], fechas y
+    estaciones sin nulos, y conjuntos de partición ordenados en el tiempo sin superposición.
+    """
+    problemas = []
+    if not modelado["viaje_id"].is_unique:
+        problemas.append("quedan viaje_id repetidos")
+    ids = estaciones["id"]
+    if not (modelado["origen_id"].isin(ids).all() and modelado["destino_id"].isin(ids).all()):
+        problemas.append("hay origen o destino sin nomenclatura")
+    if not modelado["duracion_min"].between(0, duracion_maxima_min, inclusive="right").all():
+        problemas.append("hay duraciones fuera de (0, 24 h]")
+    columnas = ["inicio_del_viaje", "fin_del_viaje", "origen_id", "destino_id"]
+    if modelado[columnas].isna().any().any():
+        problemas.append("hay nulos en fechas o estaciones")
+    if modelado["particion"].isna().any():
+        problemas.append("hay viajes sin conjunto de partición")
+    por_conjunto = modelado.groupby("particion", observed=True)["inicio_del_viaje"].agg(
+        ["min", "max"]
+    )
+    if not (
+        por_conjunto.loc["train", "max"] < por_conjunto.loc["valid", "min"]
+        and por_conjunto.loc["valid", "max"] < por_conjunto.loc["test", "min"]
+    ):
+        problemas.append("los conjuntos de la partición se superponen en el tiempo")
+    if problemas:
+        raise ValueError("El dataset de modelado no es válido: " + "; ".join(problemas))
+
+
+@app.command()
+def p3_particionar(mes_inicio: str = MES_INICIO, mes_fin: str = MES_FIN):
+    """Deja viajes_modelado_*.parquet: viajes limpios con columnas de modelado y partición."""
+    ruta_limpios = PROCESSED_DATA_DIR / f"viajes_limpios_{mes_inicio}_{mes_fin}.parquet"
+    if not ruta_limpios.exists():
+        raise FileNotFoundError(f"Falta {ruta_limpios.name}; ejecutar `make data`")
+    # Solo las columnas de modelado: así no se cargan usuario_id, genero ni anio_de_nacimiento
+    columnas = [c for c in cfg.P3_COLUMNAS_MODELADO if c != "duracion_min"]
+    modelado = p3_preparar_modelado(pd.read_parquet(ruta_limpios, columns=columnas))
+    p3_validar_modelado(modelado, p3_cargar_estaciones())
+
+    ruta_salida = p3_ruta_viajes_modelado(mes_inicio, mes_fin)
+    modelado.to_parquet(ruta_salida, index=False)
+    conteo = modelado["particion"].value_counts().reindex(["train", "valid", "test", "brecha"])
+    logger.info("Partición: " + ", ".join(f"{k} {v}" for k, v in conteo.items()))
+    logger.success(f"{ruta_salida.name}: {len(modelado)} registros")
 
 
 if __name__ == "__main__":
