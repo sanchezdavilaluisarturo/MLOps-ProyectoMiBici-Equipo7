@@ -173,6 +173,13 @@ RUTA_VIAJES_MODELADO = PROCESSED_DATA_DIR / f"viajes_modelado_{MES_INICIO}_{MES_
 RUTA_ESTACIONES_TRAIN = PROCESSED_DATA_DIR / "estaciones_train.parquet"
 RUTA_DEMANDA_ESTACION_HORA = PROCESSED_DATA_DIR / "demanda_estacion_hora.parquet"
 
+# P1 (regresión): viajes que inician en cada estación por hora de servicio, un día adelante.
+# Los rezagos se miden en días completos (>= 1) para no usar información del día que se predice.
+P1_REZAGOS_DIAS = [1, 7]
+# Semanas anteriores que promedia la variable de demanda a la misma hora
+P1_SEMANAS_PROMEDIO = 4
+RUTA_P1_DEMANDA = PROCESSED_DATA_DIR / "p1_demanda_estacion_hora.parquet"
+
 # If tqdm is installed, configure loguru with tqdm.write
 # https://github.com/Delgan/loguru/issues/135
 try:
