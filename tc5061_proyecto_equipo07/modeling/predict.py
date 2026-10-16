@@ -1,30 +1,25 @@
-from pathlib import Path
+"""Inferencia de P3 (clustering de estaciones): asignar grupos con un modelo ya ajustado.
 
-from loguru import logger
-from tqdm import tqdm
-import typer
+Se usa para medir la estabilidad de los grupos en otro periodo (el año de validación) y, más
+adelante, para asignar grupo a las estaciones nuevas, que no tienen historia en entrenamiento.
+"""
 
-from tc5061_proyecto_equipo07.config import MODELS_DIR, PROCESSED_DATA_DIR
-
-app = typer.Typer()
-
-
-@app.command()
-def main(
-    # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
-    features_path: Path = PROCESSED_DATA_DIR / "test_features.csv",
-    model_path: Path = MODELS_DIR / "model.pkl",
-    predictions_path: Path = PROCESSED_DATA_DIR / "test_predictions.csv",
-    # -----------------------------------------
-):
-    # ---- REPLACE THIS WITH YOUR OWN CODE ----
-    logger.info("Performing inference for model...")
-    for i in tqdm(range(10), total=10):
-        if i == 5:
-            logger.info("Something happened for iteration 5.")
-    logger.success("Inference complete.")
-    # -----------------------------------------
+import numpy as np
+import pandas as pd
+from sklearn.metrics import adjusted_rand_score
 
 
-if __name__ == "__main__":
-    app()
+def p3_reasignar_grupos(
+    modelo, caracteristicas: pd.DataFrame, columnas_modelo: list[str]
+) -> np.ndarray:
+    """Regresa el grupo más cercano de cada estación según el modelo ajustado en entrenamiento.
+
+    `caracteristicas` trae las variables de otro periodo (por ejemplo, validación); el modelo
+    ya incluye su escalador, así que no hay que estandarizarlas a mano.
+    """
+    return modelo.predict(caracteristicas[columnas_modelo])
+
+
+def p3_estabilidad_ari(grupo_original, grupo_reasignado) -> float:
+    """Índice de Rand ajustado entre dos asignaciones (1 = idénticas, 0 = azar)."""
+    return float(adjusted_rand_score(grupo_original, grupo_reasignado))

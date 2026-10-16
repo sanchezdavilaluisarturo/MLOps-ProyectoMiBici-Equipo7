@@ -1,0 +1,112 @@
+# P3 (clustering de estaciones): calidad en cada PR y entrenamiento manual.
+#
+# - `calidad` corre en los PR que tocan el módulo o las pruebas (ruff y pytest, sin datos).
+# - `entrenar` solo corre a mano (workflow_dispatch): descarga los datos, genera features,
+#   entrena el baseline y el modelo alternativo y, si se pide, los registra en MLflow.
+#
+# Variables del repositorio (Settings > Secrets and variables > Actions > Variables):
+#   MLFLOW_TRACKING_URI  URL del servidor MLflow
+#   MLFLOW_RUN_NAME      prefijo del nombre de los runs (los runs quedan `<valor>-baseline` y
+#                        `<valor>-pca_kmeans`); si no existe se llaman `baseline` y `pca_kmeans`
+# Solo si el servidor exigiera credenciales irían en secrets (MLFLOW_TRACKING_USERNAME/PASSWORD).
+name: P3 clustering de estaciones
+
+on:
+  workflow_dispatch:
+    inputs:
+      registrar:
+        description: "Registrar los runs en MLflow (escribe en el servidor del equipo)"
+        type: boolean
+        default: false
+      de_nuevo:
+        description: "Crear un run nuevo aunque ya exista uno terminado con ese nombre"
+        type: boolean
+        default: false
+      exigir_aceptacion:
+        description: "Fallar el job si el modelo alternativo no cumple los criterios de aceptación"
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - "tc5061_proyecto_equipo07/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "Makefile"
+      - ".github/workflows/p3.yml"
+
+permissions:
+  contents: read
+
+# Un solo entrenamiento a la vez por rama, para no duplicar registros en MLflow
+concurrency:
+  group: p3-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MPLBACKEND: Agg
+
+jobs:
+  calidad:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Formato y lint de los módulos de P3
+        run: |
+          ruff format --check tc5061_proyecto_equipo07
+          ruff check tc5061_proyecto_equipo07/features.py tc5061_proyecto_equipo07/plots.py tc5061_proyecto_equipo07/modeling
+      - name: Lint de todo el paquete (informativo)
+        # dataset.py trae un aviso anterior a P3 (FURB192); no bloquea hasta que el equipo lo corrija
+        continue-on-error: true
+        run: ruff check tc5061_proyecto_equipo07
+      - name: Pruebas
+        run: pytest tests -q
+
+  entrenar:
+    if: github.event_name == 'workflow_dispatch'
+    needs: calidad
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MLFLOW_RUN_NAME: ${{ vars.MLFLOW_RUN_NAME }}
+      P3_REGISTRAR_MLFLOW: ${{ inputs.registrar }}
+      P3_REGISTRAR_DE_NUEVO: ${{ inputs.de_nuevo }}
+      P3_EXIGIR_ACEPTACION: ${{ inputs.exigir_aceptacion }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      - name: Comprobar la URL de MLflow
+        if: ${{ inputs.registrar }}
+        run: test -n "$MLFLOW_TRACKING_URI" || (echo "Falta la variable MLFLOW_TRACKING_URI" && exit 1)
+      - name: Restaurar los CSV de data/raw
+        # La clave cambia solo si cambia el manifiesto (registros y SHA-256 de cada archivo)
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: datos-raw-${{ hashFiles('references/fuentes-datos.csv') }}
+      - name: Datos (descarga lo que falte, construye y limpia)
+        # Equivale a `make data` sin reinstalar dependencias
+        run: python -m tc5061_proyecto_equipo07.dataset todo
+      - name: Features de P3
+        run: make features
+      - name: Entrenamiento de P3
+        run: make train
+      - name: Subir figuras y tablas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p3-resultados
+          path: reports/figures/p3_*
+          if-no-files-found: warn
