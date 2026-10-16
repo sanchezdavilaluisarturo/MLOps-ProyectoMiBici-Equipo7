@@ -4,11 +4,12 @@
 # - `entrenar` solo corre a mano (workflow_dispatch): descarga los datos, genera features,
 #   entrena el baseline y el modelo alternativo y, si se pide, los registra en MLflow.
 #
-# Variables del repositorio (Settings > Secrets and variables > Actions > Variables):
-#   MLFLOW_TRACKING_URI  URL del servidor MLflow
+# Secret del repositorio (Settings > Secrets and variables > Actions > Secrets):
+#   MLFLOW_TRACKING_URI  URL del servidor MLflow (secret: no se muestra en los logs)
+# Variable del repositorio (misma pantalla, pestaña Variables):
 #   MLFLOW_RUN_NAME      prefijo del nombre de los runs (los runs quedan `<valor>-baseline` y
 #                        `<valor>-pca_kmeans`); si no existe se llaman `baseline` y `pca_kmeans`
-# Solo si el servidor exigiera credenciales irían en secrets (MLFLOW_TRACKING_USERNAME/PASSWORD).
+# Si el servidor exigiera credenciales también irían en secrets (MLFLOW_TRACKING_USERNAME/PASSWORD).
 name: P3 clustering de estaciones
 
 on:
@@ -74,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
       MLFLOW_RUN_NAME: ${{ vars.MLFLOW_RUN_NAME }}
       P3_REGISTRAR_MLFLOW: ${{ inputs.registrar }}
       P3_REGISTRAR_DE_NUEVO: ${{ inputs.de_nuevo }}
@@ -89,7 +90,7 @@ jobs:
         run: pip install -r requirements.txt
       - name: Comprobar la URL de MLflow
         if: ${{ inputs.registrar }}
-        run: test -n "$MLFLOW_TRACKING_URI" || (echo "Falta la variable MLFLOW_TRACKING_URI" && exit 1)
+        run: test -n "$MLFLOW_TRACKING_URI" || (echo "Falta el secret MLFLOW_TRACKING_URI" && exit 1)
       - name: Restaurar los CSV de data/raw
         # La clave cambia solo si cambia el manifiesto (registros y SHA-256 de cada archivo)
         uses: actions/cache@v4

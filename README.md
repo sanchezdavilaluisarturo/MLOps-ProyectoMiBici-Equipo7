@@ -50,7 +50,7 @@ Cada etapa es un comando del módulo `tc5061_proyecto_equipo07` y tiene su noteb
 
 | Variable | Qué controla | Por defecto |
 |---|---|---|
-| `MLFLOW_TRACKING_URI` | URL del servidor MLflow (en CI, la variable del repositorio `vars.MLFLOW_TRACKING_URI`) | `.env` |
+| `MLFLOW_TRACKING_URI` | URL del servidor MLflow (en CI, el secret del repositorio `secrets.MLFLOW_TRACKING_URI`) | `.env` |
 | `MLFLOW_RUN_NAME` | Prefijo del nombre de los runs: `<valor>-baseline` y `<valor>-pca_kmeans` (en CI, `vars.MLFLOW_RUN_NAME`) | `baseline` y `pca_kmeans` |
 | `P3_REGISTRAR_MLFLOW` | Escribir en MLflow | `false` |
 | `P3_REGISTRAR_DE_NUEVO` | Crear un run nuevo aunque ya exista uno terminado con ese nombre | `false` |
