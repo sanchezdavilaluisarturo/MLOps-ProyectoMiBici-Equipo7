@@ -1,0 +1,4 @@
+id,estaciones,pct_salidas_6_a_9h,pct_salidas_17_a_20h,viajes_por_dia,neto_sobre_salidas,prop_circulares,duracion_mediana_min,capacidad_mediana
+0,68,21.498,30.131,18.579,-0.023,0.083,10.708,15.0
+1,150,17.075,35.749,30.293,-0.097,0.071,9.633,15.0
+2,144,31.902,25.619,19.991,0.045,0.077,9.288,15.0
