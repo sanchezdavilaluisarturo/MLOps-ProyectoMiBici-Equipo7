@@ -663,16 +663,16 @@ def p2_construir_caracteristicas(
     cambios["cumsum_dia_relativo"] = cambios["cumsum_dia"] / cambios["dpcapacity"]
     cambios = p2_agregar_caracteristicas_de_hora(cambios, bin_min)
     cambios["es_fin_semana"] = (cambios["bin"].dt.dayofweek >= 5).astype(int)
-    
+
     # Optimización de memoria
     columnas_salida = cfg.P2_FEATURES + ["clase", "estacion", "dia", "hora_idx"]
     cambios = cambios[columnas_salida]
     for c in cambios.select_dtypes("integer").columns:
-        cambios[c] = pd.to_numeric(cambios[c], downcast="integer")        # sin pérdida
-    
-    for c in cambios.select_dtypes("float64").columns:       # decimales a float32
+        cambios[c] = pd.to_numeric(cambios[c], downcast="integer")  # sin pérdida
+
+    for c in cambios.select_dtypes("float64").columns:  # decimales a float32
         cambios[c] = cambios[c].astype("float32")
-        
+
     logger.success(
         f"Features de P2 listas: {len(cambios)} filas estación-bin, "
         f"{cambios['estacion'].nunique()} estaciones, {len(cfg.P2_FEATURES)} features"
