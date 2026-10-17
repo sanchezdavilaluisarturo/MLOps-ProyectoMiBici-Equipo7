@@ -101,7 +101,8 @@ def test_p3_ajustar_baseline_es_determinista_y_coherente():
     kwargs = {"k_minimo": 2, "k_maximo": 4, "min_salidas_train": 50, "min_salidas_valid": 20}
     a = train.p3_ajustar_baseline(limpios, 42, **kwargs)
     b = train.p3_ajustar_baseline(limpios, 42, **kwargs)
-    assert a.metricas == b.metricas
+    # Tolerancia: los hilos de BLAS reparten las sumas distinto y el último decimal puede variar
+    assert a.metricas == pytest.approx(b.metricas, rel=1e-9)
     assert 2 <= a.k_elegido <= 4
     assert a.tamanos.sum() == len(a.x_train) == a.metricas["estaciones_train"]
     assert a.metricas["ari_valid"] <= 1.0

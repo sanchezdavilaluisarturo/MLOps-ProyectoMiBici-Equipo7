@@ -1,20 +1,31 @@
-# P3 (clustering de estaciones): calidad en cada PR y entrenamiento manual.
+# P3 (clustering de estaciones): calidad y entrenamiento.
 #
-# - `calidad` corre en los PR que tocan el módulo o las pruebas (ruff y pytest, sin datos).
-# - `entrenar` solo corre a mano (workflow_dispatch): descarga los datos, genera features,
-#   entrena el baseline y el modelo alternativo y, si se pide, los registra en MLflow.
+# Se puede correr sola (pestaña Actions > P3 > Run workflow) o desde la acción de las tres
+# preguntas (TC5061-Proyecto-Equipo07.yml), que la llama con `workflow_call` y ya trae la calidad.
+# La calidad en los PR la corre TC5061-Proyecto-Equipo07.yml, para no repetirla tres veces.
+#
+# - `calidad` (ruff y pytest, sin datos) se omite si la acción que llama ya la corrió.
+# - `entrenar` descarga los datos, genera features, entrena el baseline y el modelo alternativo
+#   y, si se pide, los registra en MLflow.
+# Responsable: Luis Arturo Sánchez Davila (notebooks *-lasd-*). Sirve de modelo para p1.yml y p2.yml.
 #
 # Secret del repositorio (Settings > Secrets and variables > Actions > Secrets):
 #   MLFLOW_TRACKING_URI  URL del servidor MLflow (secret: no se muestra en los logs)
-# Variable del repositorio (misma pantalla, pestaña Variables):
-#   MLFLOW_RUN_NAME      prefijo del nombre de los runs (los runs quedan `<valor>-baseline` y
-#                        `<valor>-pca_kmeans`); si no existe se llaman `baseline` y `pca_kmeans`
+# Nombre de los runs (lo fija el workflow, ya no es una variable del repositorio):
+#   sola (Run workflow en p3)                  -> `mibici-equipo07-p3-baseline` y `mibici-equipo07-p3-pca_kmeans`
+#   desde TC5061-Proyecto-Equipo07.yml (todas) -> `mibici-equipo07-todas-p3-baseline` y `mibici-equipo07-todas-p3-pca_kmeans`
+# Para forzar el nombre al correrla sola, se llena el campo `nombre_run` de Run workflow: los runs
+# quedan `<nombre_run>-baseline` y `<nombre_run>-pca_kmeans` (tiene prioridad sobre los de arriba).
 # Si el servidor exigiera credenciales también irían en secrets (MLFLOW_TRACKING_USERNAME/PASSWORD).
-name: P3 clustering de estaciones
+name: P3 - clustering de estaciones
 
 on:
   workflow_dispatch:
     inputs:
+      nombre_run:
+        description: "Forzar el prefijo de los runs de MLflow (vacío: mibici-equipo07-p3). Quedan <valor>-baseline, etc."
+        type: string
+        default: ""
       registrar:
         description: "Registrar los runs en MLflow (escribe en el servidor del equipo)"
         type: boolean
@@ -27,13 +38,25 @@ on:
         description: "Fallar el job si el modelo alternativo no cumple los criterios de aceptación"
         type: boolean
         default: false
-  pull_request:
-    paths:
-      - "tc5061_proyecto_equipo07/**"
-      - "tests/**"
-      - "requirements.txt"
-      - "Makefile"
-      - ".github/workflows/p3.yml"
+  workflow_call:
+    inputs:
+      registrar:
+        type: boolean
+        default: false
+      de_nuevo:
+        type: boolean
+        default: false
+      exigir_aceptacion:
+        type: boolean
+        default: false
+      prefijo_run:
+        description: "Prefijo del nombre de los runs de MLflow (si no se pasa, mibici-equipo07-p3)"
+        type: string
+        default: mibici-equipo07-p3
+      omitir_calidad:
+        description: "La acción que llama ya corrió la calidad"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -48,6 +71,7 @@ env:
 
 jobs:
   calidad:
+    if: ${{ !inputs.omitir_calidad }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -67,16 +91,18 @@ jobs:
         continue-on-error: true
         run: ruff check tc5061_proyecto_equipo07
       - name: Pruebas
+        # Ya corre todo `tests/`: P1 y P2 solo agregan sus archivos (test_p1_*.py, test_p2_*.py)
         run: pytest tests -q
 
   entrenar:
-    if: github.event_name == 'workflow_dispatch'
+    # Corre aunque `calidad` se omita (la llamó otra acción); falla si `calidad` falló
     needs: calidad
+    if: ${{ !cancelled() && (needs.calidad.result == 'success' || needs.calidad.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
-      MLFLOW_RUN_NAME: ${{ vars.MLFLOW_RUN_NAME }}
+      MLFLOW_RUN_NAME: ${{ inputs.nombre_run || inputs.prefijo_run || 'mibici-equipo07-p3' }}
       P3_REGISTRAR_MLFLOW: ${{ inputs.registrar }}
       P3_REGISTRAR_DE_NUEVO: ${{ inputs.de_nuevo }}
       P3_EXIGIR_ACEPTACION: ${{ inputs.exigir_aceptacion }}
