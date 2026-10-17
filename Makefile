@@ -64,12 +64,17 @@ data: requirements
 	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.dataset todo
 
 
-## Make features: P1 (demanda por estación-hora) y P3 (partición, estaciones y demanda)
+## Make P3 features (partición temporal, estaciones y demanda por estación-hora)
 .PHONY: features
 features:
-	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.features p1-features
 	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.dataset p3-particionar
 	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.features p3-features
+
+
+## Make P1 features (viajes por estación-hora con rezagos, calendario y estación)
+.PHONY: features-p1
+features-p1:
+	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.features p1-features
 
 
 ## Train P3 (modelo base y modelo alternativo; con P3_REGISTRAR_MLFLOW=true registra en MLflow)
