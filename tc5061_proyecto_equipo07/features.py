@@ -225,5 +225,233 @@ def p3_features(mes_inicio: str = cfg.MES_INICIO, mes_fin: str = cfg.MES_FIN):
     logger.success("Features de P3 listas en data/processed/")
 
 
+# ---------------------------------------------------------------------------------------------
+# P2 (clasificación de riesgos): reglas de limpieza propias de la pregunta.
+# Entrada: data/processed/viajes_limpios_AAAA-MM_AAAA-MM.parquet (`dataset limpiar`).
+# ---------------------------------------------------------------------------------------------
+
+
+def p2_estaciones_con_capacidad(estaciones: pd.DataFrame) -> pd.DataFrame:
+    """Regresa solo las estaciones con capacidad mayor a 0 (P2 analiza la capacidad)."""
+    return estaciones[estaciones["dpcapacity"] > 0]
+
+
+def p2_descartar_estaciones_inexistentes(
+    viajes: pd.DataFrame, estaciones: pd.DataFrame
+) -> pd.DataFrame:
+    """Regresa los viajes cuyo origen y destino están en `estaciones`."""
+    ids = estaciones["id"].unique()
+    return viajes[viajes["origen_id"].isin(ids) & viajes["destino_id"].isin(ids)]
+
+
+def p2_descartar_fuera_de_rango(
+    viajes: pd.DataFrame, fecha_limite: str = cfg.P2_FECHA_LIMITE_FIN_VIAJE
+) -> pd.DataFrame:
+    """Regresa los viajes que terminan antes de `fecha_limite`."""
+    return viajes[viajes["fin_del_viaje"] < fecha_limite]
+
+
+def p2_descartar_horas_sin_servicio(
+    viajes: pd.DataFrame, horas_sin_servicio=cfg.P2_HORAS_SIN_SERVICIO
+) -> pd.DataFrame:
+    """Regresa los viajes que inician en horas con servicio (se consideran anómalos los demás)."""
+    return viajes[~viajes["inicio_del_viaje"].dt.hour.isin(horas_sin_servicio)]
+
+
+def p2_limpiar_viajes(viajes: pd.DataFrame, estaciones: pd.DataFrame) -> pd.DataFrame:
+    """Aplica en orden las reglas de limpieza de P2."""
+    viajes = p2_descartar_estaciones_inexistentes(viajes, p2_estaciones_con_capacidad(estaciones))
+    viajes = p2_descartar_fuera_de_rango(viajes)
+    return p2_descartar_horas_sin_servicio(viajes)
+
+
+def p2_cargar_viajes() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Regresa (viajes limpios para P2, estaciones con capacidad) listos para el modelado."""
+    if not cfg.RUTA_VIAJES_LIMPIOS.exists():
+        raise FileNotFoundError(f"Falta {cfg.RUTA_VIAJES_LIMPIOS.name}; ejecutar `make data`")
+    # Solo las columnas que usa P2: menos memoria y los datos personales no pasan
+    viajes = pd.read_parquet(
+        cfg.RUTA_VIAJES_LIMPIOS,
+        columns=["inicio_del_viaje", "fin_del_viaje", "origen_id", "destino_id"],
+    )
+    estaciones = p2_estaciones_con_capacidad(dataset.p3_cargar_estaciones())
+
+    limpios = p2_limpiar_viajes(viajes, estaciones)
+    logger.info(f"Viajes P2: {len(limpios)} registros ({len(viajes) - len(limpios)} retirados)")
+    logger.success(f"Limpieza de P2 lista: {len(limpios)} viajes y {len(estaciones)} estaciones")
+    return limpios, estaciones
+
+
+def p2_intervalo(ts: pd.Series, bin_min: int) -> pd.Series:
+    """Regresa el bin de cada instante; los de horas sin servicio van al último bin de las 0:00."""
+    b = ts.dt.floor(f"{bin_min}min")
+    ultimo = b.dt.floor("D") + pd.Timedelta(hours=1) - pd.Timedelta(minutes=bin_min)
+    return b.where(~b.dt.hour.isin(cfg.P2_HORAS_SIN_SERVICIO), ultimo)
+
+
+def p2_obtener_dataframe_de_eventos_con_bins(viajes: pd.DataFrame, bin_min: int) -> pd.DataFrame:
+    """Regresa salidas y entradas por estación y bin (solo los bins con actividad)."""
+    salidas = (
+        viajes.groupby(["origen_id", p2_intervalo(viajes["inicio_del_viaje"], bin_min)])
+        .size()
+        .rename("salidas")
+    )
+    entradas = (
+        viajes.groupby(["destino_id", p2_intervalo(viajes["fin_del_viaje"], bin_min)])
+        .size()
+        .rename("entradas")
+    )
+    salidas.index.names = entradas.index.names = ["estacion", "bin"]
+    return pd.concat([salidas, entradas], axis=1).fillna(0).astype("int32")
+
+
+def p2_generar_arreglo_de_bins(eventos: pd.DataFrame, bin_min: int) -> pd.DatetimeIndex:
+    """Regresa los bins del primer día al último bin de `eventos`, sin horas sin servicio."""
+    bins = pd.date_range(
+        eventos.index.get_level_values("bin").min().floor("D"),
+        eventos.index.get_level_values("bin").max(),
+        freq=f"{bin_min}min",
+    )
+    return bins[~bins.hour.isin(cfg.P2_HORAS_SIN_SERVICIO)]
+
+
+def p2_obtener_dataframe_de_cambios(viajes: pd.DataFrame, bin_min: int) -> pd.DataFrame:
+    """Regresa salidas y entradas para cada estación y cada bin (los ceros también son filas)."""
+    eventos = p2_obtener_dataframe_de_eventos_con_bins(viajes, bin_min)
+    bins = p2_generar_arreglo_de_bins(eventos, bin_min)
+    rejilla = pd.MultiIndex.from_product(
+        [eventos.index.get_level_values("estacion").unique(), bins], names=["estacion", "bin"]
+    )
+    return eventos.reindex(rejilla, fill_value=0).reset_index()
+
+
+def p2_agregar_suma_acumulada_a_cambios(cambios: pd.DataFrame) -> pd.DataFrame:
+    """Agrega neto, dia (de servicio, 05:00 a 00:59) y cumsum_dia; quita estación-días sin viajes."""
+    cambios["neto"] = cambios["entradas"] - cambios["salidas"]
+    cambios["dia"] = (cambios["bin"] - pd.Timedelta(hours=5)).dt.floor("D")
+
+    actividad = (
+        cambios.groupby(["estacion", "dia"])[["salidas", "entradas"]].transform("sum").sum(axis=1)
+    )
+    cambios = cambios[actividad > 0]
+    cambios = cambios.sort_values(["estacion", "bin"]).reset_index(drop=True)
+    cambios["cumsum_dia"] = cambios.groupby(["estacion", "dia"], sort=False)["neto"].cumsum()
+    return cambios
+
+
+def p2_agregar_datos_de_estacion_a_cambios(
+    cambios: pd.DataFrame, estaciones: pd.DataFrame
+) -> pd.DataFrame:
+    """Agrega latitud, longitud y capacidad de cada estación."""
+    cambios = cambios.merge(
+        estaciones[["id", "latitude", "longitude", "dpcapacity"]],
+        left_on="estacion",
+        right_on="id",
+        how="left",
+    )
+    return cambios.drop("id", axis=1)
+
+
+def p2_obtener_mayores_cambios_en_proximos_h_bins(
+    cambios: pd.DataFrame, h: int
+) -> tuple[pd.Series, pd.Series]:
+    """Regresa (vacia, llena): peor salida y peor entrada netas en t+1..t+h, sobre la capacidad.
+
+    Son NaN cuando la ventana futura se sale del día de servicio.
+    """
+    cumsums = cambios.groupby(["estacion", "dia"], sort=False)["cumsum_dia"]
+    cambios_futuros = pd.concat(
+        [cumsums.shift(-k) - cambios["cumsum_dia"] for k in range(1, h + 1)], axis=1
+    )
+    vacia = (-cambios_futuros).max(axis=1, skipna=False).clip(lower=0) / cambios["dpcapacity"]
+    llena = cambios_futuros.max(axis=1, skipna=False).clip(lower=0) / cambios["dpcapacity"]
+    return vacia, llena
+
+
+def p2_agregar_clase_de_riesgo(cambios: pd.DataFrame, alfa: float = cfg.P2_ALFA) -> pd.DataFrame:
+    """Agrega clase: 0 = sin riesgo, 1 = sin bicis, 2 = sin anclajes.
+
+    Si una ventana tiene ambos eventos gana el de mayor estrés relativo. Se quitan las filas cuya
+    ventana futura se sale del día.
+    """
+    datos = cambios.dropna(subset=["vacia", "llena"]).copy()
+    vacia_positiva, llena_positiva = datos["vacia"] >= alfa, datos["llena"] >= alfa
+    datos["clase"] = 0
+    datos.loc[vacia_positiva, "clase"] = 1
+    datos.loc[llena_positiva, "clase"] = 2
+    ambas = vacia_positiva & llena_positiva
+    datos.loc[ambas, "clase"] = np.where(
+        datos.loc[ambas, "vacia"] >= datos.loc[ambas, "llena"], 1, 2
+    )
+    logger.info(
+        f"Ventanas con ambos eventos: {int(ambas.sum())} de "
+        f"{int((vacia_positiva | llena_positiva).sum())} positivas"
+    )
+    logger.info(
+        "Distribución de clases: "
+        f"{datos['clase'].value_counts(normalize=True).sort_index().round(4).to_dict()}"
+    )
+    return datos
+
+
+def p2_ventana(cambios: pd.DataFrame, col: str, k: int) -> pd.Series:
+    """Regresa la suma de `col` en los últimos k bins del mismo estación-día (incluye el actual)."""
+    c = cambios.groupby(["estacion", "dia"], sort=False)[col].cumsum()
+    return c - c.groupby([cambios["estacion"], cambios["dia"]], sort=False).shift(k, fill_value=0)
+
+
+def p2_agregar_caracteristicas_retrospectivas(cambios: pd.DataFrame) -> pd.DataFrame:
+    """Agrega neto relativo a la capacidad (1, 2, 4 y 8 bins) y salidas y entradas (2 y 4 bins)."""
+    for k in (1, 2, 4, 8):
+        cambios[f"neto_{k}_relativo"] = p2_ventana(cambios, "neto", k) / cambios["dpcapacity"]
+    for k in (2, 4):
+        cambios[f"salidas_{k}"] = p2_ventana(cambios, "salidas", k)
+        cambios[f"entradas_{k}"] = p2_ventana(cambios, "entradas", k)
+    return cambios
+
+
+def p2_agregar_caracteristicas_de_hora(cambios: pd.DataFrame, bin_min: int) -> pd.DataFrame:
+    """Agrega hora_idx y su codificación cíclica (hora_sin, hora_cos)."""
+    cambios["hora_idx"] = (cambios["bin"].dt.hour * 60 + cambios["bin"].dt.minute) // bin_min
+    bins_por_dia = 60 * 24 / bin_min
+    cambios["hora_sin"] = np.sin(2 * np.pi * cambios["hora_idx"] / bins_por_dia)
+    cambios["hora_cos"] = np.cos(2 * np.pi * cambios["hora_idx"] / bins_por_dia)
+    return cambios
+
+
+def p2_construir_caracteristicas(
+    viajes: pd.DataFrame,
+    estaciones: pd.DataFrame,
+    bin_min: int = cfg.P2_BIN_MIN,
+    h_bins: int = cfg.P2_H_BINS,
+    alfa: float = cfg.P2_ALFA,
+) -> pd.DataFrame:
+    """Regresa la tabla estación-bin con las columnas de P2_FEATURES y la clase a predecir.
+    Limitación importante: por definición del planteamiento, los últimos h_bins registros por día
+    no tendrán clase de riesgo a clasificar. Estos registros se filtran.
+    """
+    cambios = p2_obtener_dataframe_de_cambios(viajes, bin_min)
+    # Cada viaje es exactamente una salida y una entrada
+    if cambios["salidas"].sum() != len(viajes) or cambios["entradas"].sum() != len(viajes):
+        raise ValueError("Las salidas o entradas por bin no coinciden con el número de viajes")
+
+    cambios = p2_agregar_suma_acumulada_a_cambios(cambios)
+    cambios = p2_agregar_datos_de_estacion_a_cambios(cambios, estaciones)
+    cambios["vacia"], cambios["llena"] = p2_obtener_mayores_cambios_en_proximos_h_bins(
+        cambios, h_bins
+    )
+    cambios = p2_agregar_clase_de_riesgo(cambios, alfa)
+
+    cambios = p2_agregar_caracteristicas_retrospectivas(cambios)
+    cambios["cumsum_dia_relativo"] = cambios["cumsum_dia"] / cambios["dpcapacity"]
+    cambios = p2_agregar_caracteristicas_de_hora(cambios, bin_min)
+    cambios["es_fin_semana"] = (cambios["bin"].dt.dayofweek >= 5).astype(int)
+    logger.success(
+        f"Features de P2 listas: {len(cambios)} filas estación-bin, "
+        f"{cambios['estacion'].nunique()} estaciones, {len(cfg.P2_FEATURES)} features"
+    )
+    return cambios
+
+
 if __name__ == "__main__":
     app()
