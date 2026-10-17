@@ -31,6 +31,16 @@ P1_MODELOS = {
     "xgb": ("p1-xgb-poisson", "candidato", "xgboost"),
 }
 
+# Descripción de cada run en MLflow (caja "Description")
+P1_DESCRIPCIONES = {
+    "baseline": "Promedio de la misma hora en las 4 semanas anteriores; si la estación no tiene "
+    "historia, usa su nivel de train o el del sistema. Referencia que los candidatos deben superar.",
+    "hgb": "HistGradientBoosting con pérdida Poisson sobre el nivel histórico de cada estación "
+    "aprendido en train; predice los viajes del día siguiente por estación-hora.",
+    "xgb": "XGBoost con pérdida Poisson sobre el nivel histórico de cada estación aprendido en "
+    "train; predice los viajes del día siguiente por estación-hora.",
+}
+
 
 class P1BaselinePromedio(BaseEstimator, RegressorMixin):
     """Predice el promedio de la misma hora en las semanas anteriores (baseline estacional).

@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import time
 import warnings
 
 from loguru import logger
@@ -41,7 +42,11 @@ import typer
 from tc5061_proyecto_equipo07 import config as cfg
 from tc5061_proyecto_equipo07 import dataset, plots
 from tc5061_proyecto_equipo07.features import p3_construir_caracteristicas
-from tc5061_proyecto_equipo07.modeling.p1_modelos import P1_MODELOS, p1_construir_modelo
+from tc5061_proyecto_equipo07.modeling.p1_modelos import (
+    P1_DESCRIPCIONES,
+    P1_MODELOS,
+    p1_construir_modelo,
+)
 from tc5061_proyecto_equipo07.modeling.predict import p3_estabilidad_ari, p3_reasignar_grupos
 
 # numpy 2.2 con Accelerate (macOS) emite RuntimeWarning falsos en matmul con datos finitos;
@@ -1114,6 +1119,7 @@ def p1_registrar_run(
                 "autor": "Daniel Sánchez Hernández",
                 "stage": etapa,
                 "model_family": familia,
+                "mlflow.note.content": P1_DESCRIPCIONES[clave],
             }
         )
         mlflow.log_params(parametros)
@@ -1148,8 +1154,11 @@ def p1_entrenar(
     for clave in claves:
         modelo = p1_construir_modelo(clave)
         logger.info(f"Entrenando {P1_MODELOS[clave][0]}")
+        inicio = time.perf_counter()
         modelo.fit(train[cfg.P1_VARIABLES], train["viajes"])
-        metricas, predicciones = {}, {}
+        # El run se abre después de entrenar, así que su duración en MLflow no incluye el fit
+        metricas = {"segundos_entrenamiento": round(time.perf_counter() - inicio, 1)}
+        predicciones = {}
         for conjunto in ["valid", "test"]:
             resultado, predicciones[conjunto] = p1_evaluar(modelo, conjuntos[conjunto], conjunto)
             metricas.update(resultado)
