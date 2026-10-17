@@ -101,6 +101,34 @@ BERMELLON = "#D55E00"
 GRIS = "#999999"
 
 # ---------------------------------------------------------------------------------------------
+# P2 (clasificacion de riesgos)
+# ---------------------------------------------------------------------------------------------
+
+# Horas del día (0-23) en las que MiBici no ofrece servicio.
+P2_HORAS_SIN_SERVICIO = (1, 2, 3, 4)
+
+
+# Los viajes que terminan en esta fecha/hora o después quedan fuera del rango
+# de análisis (enero 2020 a septiembre 2026).
+P2_FECHA_LIMITE_FIN_VIAJE = "2026-10-01 00:00:00"
+
+
+# Ventana futura que se evalúa y tamaño de cada intervalo, en minutos
+P2_HORIZONTE_MIN = 120
+P2_BIN_MIN = 30
+P2_H_BINS = P2_HORIZONTE_MIN // P2_BIN_MIN
+# Un cambio mayor a esta fracción de la capacidad se considera riesgo
+P2_ALFA = 0.5
+
+
+P2_FEATURES = (
+    [f"neto_{k}_relativo" for k in (1, 2, 4, 8)]
+    + [f"{c}_{k}" for c in ("salidas", "entradas") for k in (2, 4)]
+    + ["cumsum_dia_relativo", "dpcapacity", "latitude", "longitude", "hora_sin", "hora_cos"]
+    + ["es_fin_semana"]
+)
+
+# ---------------------------------------------------------------------------------------------
 # P3 (clustering de estaciones)
 # Los parámetros se leen del entorno para que el mismo comando corra en la terminal, en los
 # notebooks y en GitHub Actions (variables del repositorio). Si la variable no existe valen los
