@@ -192,3 +192,13 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# MLflow: corridas y artefactos locales
+mlruns/
+mlartifacts/
+
+# Modelos serializados (solo se versiona el .gitkeep)
+models/*
+!models/.gitkeep
+*.pkl
+*.joblib

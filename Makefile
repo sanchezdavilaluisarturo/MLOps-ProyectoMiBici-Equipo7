@@ -71,6 +71,12 @@ features:
 	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.features p3-features
 
 
+## Make P1 features (viajes por estación-hora con rezagos, calendario y estación)
+.PHONY: features-p1
+features-p1:
+	$(PYTHON_INTERPRETER) -m tc5061_proyecto_equipo07.features p1-features
+
+
 ## Train P3 (modelo base y modelo alternativo; con P3_REGISTRAR_MLFLOW=true registra en MLflow)
 .PHONY: train
 train:

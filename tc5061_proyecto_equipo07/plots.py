@@ -294,3 +294,80 @@ def p3_grafica_perfiles_y_mapa(
     ejes[2].grid(alpha=0.3)
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------------------------------------
+# P1: diagnósticos de los modelos de demanda por estación-hora
+# ---------------------------------------------------------------------------------------------
+
+
+def p1_guardar_figura(figura, ruta: Path, dpi: int = 150) -> Path:
+    """Guarda la figura en `ruta` (crea la carpeta), la cierra y regresa la ruta."""
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    figura.tight_layout()
+    figura.savefig(ruta, dpi=dpi)
+    plt.close(figura)
+    return ruta
+
+
+def p1_grafica_mae_por_hora(mae_valid: pd.Series, mae_test: pd.Series, titulo: str):
+    """MAE por hora del día en valid y test: muestra si el error se concentra en los picos."""
+    figura, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(mae_valid.index, mae_valid.values, color=AZUL, marker="o", label="valid")
+    ax.plot(mae_test.index, mae_test.values, color=NARANJA, marker="o", label="test")
+    ax.set_title(titulo)
+    ax.set_xlabel("Hora de inicio")
+    ax.set_ylabel("MAE (viajes por estación-hora)")
+    ax.set_xticks(mae_valid.index)
+    ax.legend()
+    return figura
+
+
+def p1_grafica_real_vs_prediccion(real: np.ndarray, prediccion: np.ndarray, titulo: str):
+    """Densidad de real contra predicción (hexbin, escala log); la diagonal es el acierto perfecto."""
+    figura, ax = plt.subplots(figsize=(6, 6))
+    limite = float(np.percentile(np.concatenate([real, prediccion]), 99.9))
+    puntos = ax.hexbin(
+        real, prediccion, gridsize=40, extent=(0, limite, 0, limite), bins="log", cmap="cividis"
+    )
+    ax.plot([0, limite], [0, limite], color=GRIS, linestyle="--", linewidth=1)
+    figura.colorbar(puntos, ax=ax, label="Estación-horas (escala log)")
+    ax.set_title(titulo)
+    ax.set_xlabel("Viajes reales")
+    ax.set_ylabel("Viajes predichos")
+    return figura
+
+
+def p1_grafica_serie_diaria(diaria: pd.DataFrame, titulo: str):
+    """Viajes diarios de todo el sistema: real contra predicción (lo que planea el operador)."""
+    figura, ax = plt.subplots(figsize=(12, 4))
+    ax.plot(diaria.index, diaria["real"], color=AZUL, linewidth=1, label="Real")
+    ax.plot(diaria.index, diaria["prediccion"], color=NARANJA, linewidth=1, label="Predicción")
+    ax.set_title(titulo)
+    ax.set_xlabel("Fecha")
+    ax.set_ylabel("Viajes por día")
+    ax.legend()
+    return figura
+
+
+def p1_grafica_curva_aprendizaje(curva: pd.DataFrame, titulo: str):
+    """MAE de train y valid por iteración del boosting: si valid sube mientras train baja, hay
+    overfitting."""
+    figura, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(curva["iteracion"], curva["train_mae"], color=AZUL, label="train")
+    ax.plot(curva["iteracion"], curva["valid_mae"], color=NARANJA, label="valid")
+    ax.set_title(titulo)
+    ax.set_xlabel("Iteración (árboles)")
+    ax.set_ylabel("MAE")
+    ax.legend()
+    return figura
+
+
+def p1_grafica_importancia(importancia: pd.Series, titulo: str):
+    """Importancia por permutación: cuánto empeora el MAE de valid al desordenar cada variable."""
+    figura, ax = plt.subplots(figsize=(8, 5))
+    orden = importancia.sort_values()
+    ax.barh(orden.index, orden.values, color=VERDE)
+    ax.set_title(titulo)
+    ax.set_xlabel("Aumento del MAE al permutar la variable")
+    return figura
