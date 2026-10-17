@@ -304,3 +304,14 @@ A igual `k` (`k = 3`) tampoco hay ventaja clara: el baseline logra ARI 0.689 y g
 | Daniel Sánchez Hernández | A01840324 | *por definir* |
 | Luis Arturo Sánchez Davila | A01840576 | *por definir* |
 | Fernando Arreola Treviño | A01840331 | *por definir* |
+
+## Referencias
+
+### Uso de herramientas de inteligencia artificial
+
+Se usó **Claude** (Anthropic; Claude Code con el modelo Claude Sonnet 5.5) como asistente de programación y revisión en el trabajo de P3 de Luis Arturo Sánchez Davila:
+
+- Reorganización de la lógica de los notebooks 0.03 y 0.05 a 0.08 en el módulo `tc5061_proyecto_equipo07` (funciones `p3_*`), con sus comandos, targets de `make`, pruebas y el workflow de GitHub Actions.
+- Redacción de la documentación (`README.md`, `notebooks/README.md`) y de las observaciones de los notebooks.
+
+Las decisiones de diseño, los criterios de aceptación del modelo, la ejecución con los datos reales, la revisión de los resultados y los commits, push y Pull Requests son del integrante, que revisó y es responsable del contenido. Por acuerdo del equipo, esta declaración vive aquí y no en los mensajes de commit.
