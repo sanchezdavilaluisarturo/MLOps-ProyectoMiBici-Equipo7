@@ -11,6 +11,7 @@ Uso: python -m tc5061_proyecto_equipo07.features p1-features | p3-features
 from loguru import logger
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 import typer
 
 from tc5061_proyecto_equipo07 import config as cfg
@@ -201,6 +202,46 @@ def p3_demanda_estacion_hora(
 P1_HORAS_POR_DIA = 24 - len(cfg.HORAS_SIN_SERVICIO)
 
 
+def p1_meses_sin_datos(periodos_en_datos, mes_inicio: str, mes_fin: str) -> list[str]:
+    """Regresa los meses del rango que no aparecen en los datos (por ejemplo, retirados del portal)."""
+    presentes = {str(periodo) for periodo in periodos_en_datos}
+    rango = pd.period_range(mes_inicio, mes_fin, freq="M")
+    return [str(mes) for mes in rango if str(mes) not in presentes]
+
+
+def p1_cargar_estaciones() -> pd.DataFrame:
+    """Lee la nomenclatura de estaciones más reciente de data/raw/estaciones/."""
+    ruta = max(cfg.RUTA_ESTACIONES_CRUDAS.glob("nomenclatura_*.csv"), default=None)
+    if ruta is None:
+        raise FileNotFoundError(
+            f"No hay nomenclatura en {cfg.RUTA_ESTACIONES_CRUDAS}; `make data`"
+        )
+    return pd.read_csv(ruta, encoding=dataset.detectar_codificacion(ruta.read_bytes()))
+
+
+def p1_asignar_particion(hora_inicio: pd.Series) -> pd.Series:
+    """Regresa train, valid, test o brecha de cada hora según la partición temporal del proyecto.
+
+    Las horas previas a cada frontera (BRECHA_HORAS) quedan en `brecha`: con un horizonte de 24 h,
+    sus rezagos y etiquetas cruzarían la frontera entre conjuntos.
+    """
+    frontera_valid = pd.Timestamp(cfg.FRONTERA_VALID)
+    frontera_test = pd.Timestamp(cfg.FRONTERA_TEST)
+    brecha = pd.Timedelta(hours=cfg.BRECHA_HORAS)
+    conjunto = np.select(
+        [
+            hora_inicio < frontera_valid - brecha,
+            hora_inicio < frontera_valid,
+            hora_inicio < frontera_test - brecha,
+            hora_inicio < frontera_test,
+        ],
+        ["train", "brecha", "valid", "brecha"],
+        default="test",
+    )
+    categorias = ["train", "valid", "test", "brecha"]
+    return pd.Series(pd.Categorical(conjunto, categories=categorias), index=hora_inicio.index)
+
+
 def p1_horas_de_servicio(mes_inicio: str, mes_fin: str) -> pd.DatetimeIndex:
     """Regresa todas las horas con servicio del rango (sin las de 1:00 a 4:59, en que no opera).
 
@@ -358,9 +399,7 @@ def p1_tabla_modelado(
     trae la partición temporal del proyecto; las horas en `brecha` no se usan para entrenar ni
     evaluar.
     """
-    meses_sin_datos = dataset.p3_meses_sin_datos(
-        limpios["periodo_archivo"].astype(str).unique(), mes_inicio, mes_fin
-    )
+    meses_sin_datos = p1_meses_sin_datos(limpios["periodo_archivo"].unique(), mes_inicio, mes_fin)
     horas = p1_horas_de_servicio(mes_inicio, mes_fin)
     matriz, ids, apertura = p1_matriz_demanda(limpios, horas, meses_sin_datos)
 
@@ -385,8 +424,47 @@ def p1_tabla_modelado(
     tabla = tabla.join(p1_variables_estacion(estaciones), on="origen_id")
     dias_operando = tabla["hora_inicio"] - tabla["origen_id"].map(apertura).dt.normalize()
     tabla["dias_desde_apertura"] = dias_operando.dt.days.astype("int16")
-    tabla["particion"] = dataset.p3_asignar_particion(tabla["hora_inicio"])
+    tabla["particion"] = p1_asignar_particion(tabla["hora_inicio"])
     return tabla
+
+
+# Grupos del nivel histórico: por estación, día y hora; y por día y hora en todo el sistema
+P1_GRUPO_ESTACION = ["origen_id", "dia_semana", "hora"]
+P1_GRUPO_SISTEMA = ["dia_semana", "hora"]
+
+
+class P1NivelEstacion(BaseEstimator, TransformerMixin):
+    """Agrega el nivel histórico de demanda de cada estación, aprendido solo con los datos de `fit`.
+
+    `fit` promedia los viajes por estación, día de la semana y hora (`viajes_nivel_estacion`) y por
+    día de la semana y hora en todo el sistema (`viajes_nivel_sistema`). Una estación que no existía
+    en train recibe el nivel del sistema como nivel de estación: en train esa columna nunca está
+    vacía, así que un hueco en valid o test haría que el modelo predijera cualquier cosa. Dentro
+    de un Pipeline, `fit` solo ve train, así que valid y test no se filtran en el nivel. `transform` quita `origen_id` (el id no es una cantidad) y deja `zona`
+    como categoría con las zonas vistas en train, para que el modelo acepte texto al predecir.
+    """
+
+    def fit(self, X: pd.DataFrame, y) -> "P1NivelEstacion":
+        datos = X[P1_GRUPO_ESTACION].astype("int64")
+        datos["viajes"] = np.asarray(y, dtype="float64")
+        self.nivel_estacion_ = datos.groupby(P1_GRUPO_ESTACION)["viajes"].mean()
+        self.nivel_sistema_ = datos.groupby(P1_GRUPO_SISTEMA)["viajes"].mean()
+        self.zonas_ = sorted(X["zona"].astype(str).unique())
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        llaves = X[P1_GRUPO_ESTACION].astype("int64")
+        estacion = self.nivel_estacion_.reindex(pd.MultiIndex.from_frame(llaves)).to_numpy()
+        sistema = self.nivel_sistema_.reindex(
+            pd.MultiIndex.from_frame(llaves[P1_GRUPO_SISTEMA])
+        ).to_numpy()
+        salida = X.drop(columns="origen_id")
+        salida["zona"] = pd.Categorical(X["zona"].astype(str), categories=self.zonas_)
+        # Estación que no existía en train: usa el nivel del sistema
+        estacion = np.where(np.isnan(estacion), sistema, estacion)
+        salida["viajes_nivel_estacion"] = estacion.astype("float32")
+        salida["viajes_nivel_sistema"] = sistema.astype("float32")
+        return salida
 
 
 @app.callback()
@@ -401,7 +479,7 @@ def p1_features(mes_inicio: str = cfg.MES_INICIO, mes_fin: str = cfg.MES_FIN):
     if not ruta.exists():
         raise FileNotFoundError(f"Falta {ruta.name}; ejecutar `make data`")
     limpios = pd.read_parquet(ruta, columns=["inicio_del_viaje", "origen_id", "periodo_archivo"])
-    tabla = p1_tabla_modelado(limpios, dataset.p3_cargar_estaciones(), mes_inicio, mes_fin)
+    tabla = p1_tabla_modelado(limpios, p1_cargar_estaciones(), mes_inicio, mes_fin)
 
     # Control: la tabla debe contener todos los viajes limpios que inician en horas de servicio
     en_servicio = ~limpios["inicio_del_viaje"].dt.hour.isin(cfg.HORAS_SIN_SERVICIO)

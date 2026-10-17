@@ -40,6 +40,13 @@ MES_FIN = "2026-09"
 # Se toleran si vuelven a faltar; cualquier otro hueco detiene la ingesta.
 MESES_SIN_PUBLICAR = ["2023-04", "2023-05"]
 
+# Partición temporal común a P1, P2 y P3: train hasta 2024-09, valid de 2024-10 a 2025-09 y test
+# de 2025-10 a 2026-09. Bloques de 12 meses para que valid y test cubran todas las temporadas.
+# Las horas previas a cada frontera quedan en `brecha` (el horizonte de P1 es de 24 h) y no se usan.
+FRONTERA_VALID = "2024-10-01"
+FRONTERA_TEST = "2025-10-01"
+BRECHA_HORAS = 24
+
 # Archivos de datos
 RUTA_VIAJES_CRUDOS = RAW_DATA_DIR / "viajes"
 RUTA_ESTACIONES_CRUDAS = RAW_DATA_DIR / "estaciones"
@@ -178,11 +185,10 @@ P3_REGISTRAR_MLFLOW = p3_leer_bool("P3_REGISTRAR_MLFLOW")
 P3_REGISTRAR_DE_NUEVO = p3_leer_bool("P3_REGISTRAR_DE_NUEVO")
 P3_EXIGIR_ACEPTACION = p3_leer_bool("P3_EXIGIR_ACEPTACION")
 
-# Partición temporal acordada: train hasta 2024-09, valid 2024-10 a 2025-09, test desde 2025-10.
-# Las 24 h previas a cada frontera quedan en `brecha` (una etiqueta de P1 mira 24 h adelante).
-P3_FRONTERA_VALID = "2024-10-01"
-P3_FRONTERA_TEST = "2025-10-01"
-P3_BRECHA_HORAS = 24
+# Partición temporal: la común del proyecto (definida arriba)
+P3_FRONTERA_VALID = FRONTERA_VALID
+P3_FRONTERA_TEST = FRONTERA_TEST
+P3_BRECHA_HORAS = BRECHA_HORAS
 
 P3_HORAS_SERVICIO = [hora for hora in range(24) if hora not in HORAS_SIN_SERVICIO]
 # Columnas que pasan al modelado: usuario_id, genero y anio_de_nacimiento no pasan (privacidad)
@@ -207,6 +213,47 @@ P1_REZAGOS_DIAS = [1, 7]
 # Semanas anteriores que promedia la variable de demanda a la misma hora
 P1_SEMANAS_PROMEDIO = 4
 RUTA_P1_DEMANDA = PROCESSED_DATA_DIR / "p1_demanda_estacion_hora.parquet"
+
+# Variables de entrada de los modelos de P1 (origen_id solo lo usa el transformer de nivel)
+P1_VARIABLES = [
+    "origen_id",
+    "viajes_rezago_1d",
+    "viajes_rezago_7d",
+    f"viajes_promedio_{P1_SEMANAS_PROMEDIO}sem",
+    "hora",
+    "dia_semana",
+    "es_fin_de_semana",
+    "mes",
+    "es_festivo",
+    "capacidad",
+    "latitud",
+    "longitud",
+    "zona",
+    "dias_desde_apertura",
+]
+# Hiperparámetros iniciales fijos (sin ajuste). early_stopping=False: el corte de validación
+# interno de HGB toma filas al azar y mezclaría el orden temporal de train.
+# l2_regularization y min_samples_leaf frenan los pasos de Poisson en hojas casi sin viajes:
+# sin ellos, con los datos reales la predicción se disparó a infinito en la iteración 287.
+# (XGBoost ya trae ese freno: max_delta_step=0.7 por defecto con count:poisson.)
+P1_PARAMETROS_HGB = {
+    "loss": "poisson",
+    "max_iter": 300,
+    "learning_rate": 0.1,
+    "max_leaf_nodes": 63,
+    "l2_regularization": 1.0,
+    "min_samples_leaf": 100,
+    "early_stopping": False,
+}
+P1_PARAMETROS_XGB = {
+    "objective": "count:poisson",
+    "n_estimators": 300,
+    "learning_rate": 0.1,
+    "max_depth": 8,
+    "tree_method": "hist",
+}
+# Filas que se muestrean para los diagnósticos caros (curva de aprendizaje e importancia)
+P1_MUESTRA_DIAGNOSTICO = 200_000
 
 # If tqdm is installed, configure loguru with tqdm.write
 # https://github.com/Delgan/loguru/issues/135

@@ -1,6 +1,11 @@
-"""Entrenamiento de P3 (clustering de estaciones): modelo base, modelo alternativo y MLflow.
+"""Entrenamiento de P1 (demanda por estación-hora) y de P3 (clustering de estaciones), con MLflow.
 
-Comandos (cada parámetro tiene una variable de entorno equivalente, ver config.py):
+P1: python -m tc5061_proyecto_equipo07.modeling.train p1-entrenar [--registrar]
+Entrada: data/processed/p1_demanda_estacion_hora.parquet (`make features-p1`). Entrena el baseline,
+HGB y XGBoost, deja los diagnósticos en reports/figures/p1_* y, con --registrar (o
+P1_REGISTRAR_MLFLOW=true), registra un run por modelo en el experimento del proyecto.
+
+P3 (cada parámetro tiene una variable de entorno equivalente, ver config.py):
     python -m tc5061_proyecto_equipo07.modeling.train p3-baseline
     python -m tc5061_proyecto_equipo07.modeling.train p3-alternativo
 
@@ -21,9 +26,12 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+from sklearn.inspection import permutation_importance
 from sklearn.metrics import (
     calinski_harabasz_score,
     davies_bouldin_score,
+    mean_absolute_error,
+    root_mean_squared_error,
     silhouette_score,
 )
 from sklearn.pipeline import Pipeline
@@ -33,6 +41,7 @@ import typer
 from tc5061_proyecto_equipo07 import config as cfg
 from tc5061_proyecto_equipo07 import dataset, plots
 from tc5061_proyecto_equipo07.features import p3_construir_caracteristicas
+from tc5061_proyecto_equipo07.modeling.p1_modelos import P1_MODELOS, p1_construir_modelo
 from tc5061_proyecto_equipo07.modeling.predict import p3_estabilidad_ari, p3_reasignar_grupos
 
 # numpy 2.2 con Accelerate (macOS) emite RuntimeWarning falsos en matmul con datos finitos;
@@ -884,6 +893,285 @@ def p3_alternativo(
     if exigir_aceptacion and not alt.aceptado:
         logger.error("El modelo alternativo no cumple los criterios de aceptación")
         raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------------------------
+# P1: demanda de viajes por estación-hora (baseline, HGB y XGBoost)
+# ---------------------------------------------------------------------------------------------
+
+
+def p1_cargar_conjuntos(ruta: Path = cfg.RUTA_P1_DEMANDA) -> dict[str, pd.DataFrame]:
+    """Lee la tabla de P1 y regresa train, valid y test (las horas en `brecha` se descartan)."""
+    if not ruta.exists():
+        raise FileNotFoundError(f"Falta {ruta.name}; ejecutar `make features-p1`")
+    tabla = pd.read_parquet(
+        ruta, columns=[*cfg.P1_VARIABLES, "hora_inicio", "viajes", "particion"]
+    )
+    return {
+        conjunto: tabla[tabla["particion"] == conjunto].reset_index(drop=True)
+        for conjunto in ["train", "valid", "test"]
+    }
+
+
+def p1_evaluar(modelo, datos: pd.DataFrame, conjunto: str) -> tuple[dict[str, float], np.ndarray]:
+    """Regresa ({conjunto}_mae, {conjunto}_rmse) y las predicciones del modelo en `datos`."""
+    prediccion = modelo.predict(datos[cfg.P1_VARIABLES])
+    metricas = {
+        f"{conjunto}_mae": float(mean_absolute_error(datos["viajes"], prediccion)),
+        f"{conjunto}_rmse": float(root_mean_squared_error(datos["viajes"], prediccion)),
+    }
+    return metricas, prediccion
+
+
+def p1_mae_por_hora(datos: pd.DataFrame, prediccion: np.ndarray) -> pd.Series:
+    """MAE por hora del día: el error importa más en los picos de 8:00 y 18:00."""
+    return (datos["viajes"] - prediccion).abs().groupby(datos["hora"]).mean()
+
+
+def p1_peores_estaciones(datos: pd.DataFrame, prediccion: np.ndarray, n: int = 10) -> pd.DataFrame:
+    """Las `n` estaciones con mayor MAE: dónde el operador debe confiar menos en la predicción."""
+    errores = pd.DataFrame(
+        {"origen_id": datos["origen_id"], "error": (datos["viajes"] - prediccion).abs()}
+    )
+    resumen = errores.groupby("origen_id")["error"].agg(mae="mean", horas="size")
+    resumen["viajes_promedio"] = datos.groupby("origen_id")["viajes"].mean()
+    return resumen.sort_values("mae", ascending=False).head(n).round(3)
+
+
+def p1_serie_diaria(datos: pd.DataFrame, prediccion: np.ndarray) -> pd.DataFrame:
+    """Suma por día de los viajes reales y predichos de todas las estaciones."""
+    dia = datos["hora_inicio"].dt.normalize()
+    return pd.DataFrame({"real": datos["viajes"], "prediccion": prediccion}).groupby(dia).sum()
+
+
+def p1_curva_aprendizaje(
+    modelo, train: pd.DataFrame, valid: pd.DataFrame, clave: str, pasos: int = 10
+) -> pd.DataFrame:
+    """MAE de train y valid cada cierto número de árboles, sobre muestras de ambos conjuntos."""
+    nivel, regresor = modelo.named_steps["nivel"], modelo.named_steps["modelo"]
+    muestras = {
+        nombre: datos.sample(min(len(datos), cfg.P1_MUESTRA_DIAGNOSTICO), random_state=cfg.SEMILLA)
+        for nombre, datos in [("train", train), ("valid", valid)]
+    }
+    entradas = {nombre: nivel.transform(m[cfg.P1_VARIABLES]) for nombre, m in muestras.items()}
+    total = regresor.n_estimators if clave == "xgb" else regresor.n_iter_
+    iteraciones = np.unique(np.linspace(1, total, pasos, dtype=int))
+    curva = pd.DataFrame({"iteracion": iteraciones})
+    for nombre, entrada in entradas.items():
+        real = muestras[nombre]["viajes"]
+        if clave == "xgb":
+            errores = [
+                mean_absolute_error(real, regresor.predict(entrada, iteration_range=(0, int(i))))
+                for i in iteraciones
+            ]
+        else:
+            # staged_predict recorre los árboles una sola vez; se guardan solo los pasos pedidos
+            pedidas = set(iteraciones.tolist())
+            errores = [
+                mean_absolute_error(real, prediccion)
+                for i, prediccion in enumerate(regresor.staged_predict(entrada), start=1)
+                if i in pedidas
+            ]
+        curva[f"{nombre}_mae"] = errores
+    return curva
+
+
+def p1_importancia(modelo, valid: pd.DataFrame, repeticiones: int = 3) -> pd.Series:
+    """Importancia por permutación en una muestra de valid (aumento del MAE al desordenar)."""
+    muestra = valid.sample(min(len(valid), cfg.P1_MUESTRA_DIAGNOSTICO), random_state=cfg.SEMILLA)
+    resultado = permutation_importance(
+        modelo,
+        muestra[cfg.P1_VARIABLES],
+        muestra["viajes"],
+        scoring="neg_mean_absolute_error",
+        n_repeats=repeticiones,
+        random_state=cfg.SEMILLA,
+    )
+    return pd.Series(resultado.importances_mean, index=cfg.P1_VARIABLES).sort_values()
+
+
+def p1_guardar_diagnosticos(
+    clave: str, modelo, conjuntos: dict[str, pd.DataFrame], predicciones: dict[str, np.ndarray]
+) -> tuple[list[Path], pd.DataFrame | None]:
+    """Guarda en reports/figures/ las gráficas y tablas de un modelo; regresa rutas y curva."""
+    carpeta, nombre = cfg.FIGURES_DIR, P1_MODELOS[clave][0]
+    valid, test = conjuntos["valid"], conjuntos["test"]
+    mae_hora = pd.DataFrame(
+        {
+            "valid": p1_mae_por_hora(valid, predicciones["valid"]),
+            "test": p1_mae_por_hora(test, predicciones["test"]),
+        }
+    )
+    carpeta.mkdir(parents=True, exist_ok=True)
+    mae_hora.round(4).to_csv(carpeta / f"p1_{clave}_mae_por_hora.csv")
+    peores = p1_peores_estaciones(test, predicciones["test"])
+    peores.to_csv(carpeta / f"p1_{clave}_peores_estaciones_test.csv")
+    rutas = [
+        carpeta / f"p1_{clave}_mae_por_hora.csv",
+        carpeta / f"p1_{clave}_peores_estaciones_test.csv",
+    ]
+    rutas.append(
+        plots.p1_guardar_figura(
+            plots.p1_grafica_mae_por_hora(
+                mae_hora["valid"], mae_hora["test"], f"{nombre}: MAE por hora"
+            ),
+            carpeta / f"p1_{clave}_mae_por_hora.png",
+        )
+    )
+    rutas.append(
+        plots.p1_guardar_figura(
+            plots.p1_grafica_real_vs_prediccion(
+                test["viajes"].to_numpy("float64"), predicciones["test"], f"{nombre}: test"
+            ),
+            carpeta / f"p1_{clave}_real_vs_prediccion_test.png",
+        )
+    )
+    rutas.append(
+        plots.p1_guardar_figura(
+            plots.p1_grafica_serie_diaria(
+                p1_serie_diaria(test, predicciones["test"]), f"{nombre}: viajes diarios en test"
+            ),
+            carpeta / f"p1_{clave}_serie_diaria_test.png",
+        )
+    )
+    curva = None
+    if clave != "baseline":
+        curva = p1_curva_aprendizaje(modelo, conjuntos["train"], valid, clave)
+        rutas.append(
+            plots.p1_guardar_figura(
+                plots.p1_grafica_curva_aprendizaje(curva, f"{nombre}: curva de aprendizaje"),
+                carpeta / f"p1_{clave}_curva_aprendizaje.png",
+            )
+        )
+        rutas.append(
+            plots.p1_guardar_figura(
+                plots.p1_grafica_importancia(
+                    p1_importancia(modelo, valid), f"{nombre}: importancia en valid"
+                ),
+                carpeta / f"p1_{clave}_importancia.png",
+            )
+        )
+    return rutas, curva
+
+
+def p1_commit_actual() -> str:
+    """Commit corto con el que se ejecuta (`desconocido` si no hay repositorio Git)."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=cfg.PROJ_ROOT, text=True
+        ).strip()
+    except (subprocess.CalledProcessError, OSError):
+        return "desconocido"
+
+
+def p1_parametros(clave: str, n_train: int) -> dict:
+    """Parámetros que permiten reproducir el run: datos, partición, horizonte y modelo."""
+    parametros = {
+        "rango_datos": f"{cfg.MES_INICIO} a {cfg.MES_FIN}",
+        "data_version": dataset.version_datos(),
+        "semilla": cfg.SEMILLA,
+        "granularidad": "estacion_hora",
+        "horizonte": "dia_siguiente",
+        "frontera_valid": cfg.FRONTERA_VALID,
+        "frontera_test": cfg.FRONTERA_TEST,
+        "brecha_horas": cfg.BRECHA_HORAS,
+        "n_variables": len(cfg.P1_VARIABLES),
+        "n_train": n_train,
+        "modelo": clave,
+    }
+    if clave == "baseline":
+        parametros["semanas_promedio"] = cfg.P1_SEMANAS_PROMEDIO
+    else:
+        hiper = cfg.P1_PARAMETROS_HGB if clave == "hgb" else cfg.P1_PARAMETROS_XGB
+        parametros.update({f"modelo_{nombre}": valor for nombre, valor in hiper.items()})
+    return parametros
+
+
+def p1_registrar_run(
+    clave: str,
+    parametros: dict,
+    metricas: dict,
+    artefactos: list[Path],
+    modelo,
+    ejemplo: pd.DataFrame,
+    curva: pd.DataFrame | None = None,
+) -> str:
+    """Registra un run de P1 en el experimento del proyecto y regresa su id."""
+    import mlflow
+    import mlflow.sklearn
+
+    if not cfg.MLFLOW_TRACKING_URI:
+        raise ValueError("MLFLOW_TRACKING_URI no está definida: copiar .env.example a .env")
+    mlflow.set_tracking_uri(cfg.MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(cfg.EXPERIMENTO_MLFLOW)
+    nombre_run, etapa, familia = P1_MODELOS[clave]
+    with mlflow.start_run(run_name=nombre_run) as corrida:
+        mlflow.set_tags(
+            {
+                "equipo": "07",
+                "pregunta": "P1",
+                "commit": p1_commit_actual(),
+                "autor": "Daniel Sánchez Hernández",
+                "stage": etapa,
+                "model_family": familia,
+            }
+        )
+        mlflow.log_params(parametros)
+        mlflow.log_metrics(metricas)
+        if curva is not None:
+            for fila in curva.itertuples():
+                mlflow.log_metric("train_mae_por_iteracion", fila.train_mae, step=fila.iteracion)
+                mlflow.log_metric("valid_mae_por_iteracion", fila.valid_mae, step=fila.iteracion)
+        for ruta in artefactos:
+            mlflow.log_artifact(str(ruta), artifact_path="p1")
+        # cloudpickle: el formato por defecto (skops) rechaza las clases propias de P1
+        mlflow.sklearn.log_model(
+            modelo, name="modelo", input_example=ejemplo, serialization_format="cloudpickle"
+        )
+    logger.success(f"Run '{nombre_run}' registrado: {corrida.info.run_id}")
+    return corrida.info.run_id
+
+
+@app.command()
+def p1_entrenar(
+    modelos: str = typer.Option("baseline,hgb,xgb", help="Modelos a entrenar, separados por coma"),
+    registrar: bool = typer.Option(
+        False, "--registrar", envvar="P1_REGISTRAR_MLFLOW", help="Registrar los runs en MLflow"
+    ),
+):
+    """Entrena y evalúa los modelos de P1; elige el mejor por valid_mae (test solo se reporta)."""
+    claves = [clave.strip() for clave in modelos.split(",") if clave.strip()]
+    conjuntos = p1_cargar_conjuntos()
+    train = conjuntos["train"]
+    logger.info(", ".join(f"{nombre}: {len(datos)} filas" for nombre, datos in conjuntos.items()))
+    resumen = {}
+    for clave in claves:
+        modelo = p1_construir_modelo(clave)
+        logger.info(f"Entrenando {P1_MODELOS[clave][0]}")
+        modelo.fit(train[cfg.P1_VARIABLES], train["viajes"])
+        metricas, predicciones = {}, {}
+        for conjunto in ["valid", "test"]:
+            resultado, predicciones[conjunto] = p1_evaluar(modelo, conjuntos[conjunto], conjunto)
+            metricas.update(resultado)
+        artefactos, curva = p1_guardar_diagnosticos(clave, modelo, conjuntos, predicciones)
+        resumen[P1_MODELOS[clave][0]] = metricas
+        logger.info(f"{P1_MODELOS[clave][0]}: {metricas}")
+        if registrar:
+            p1_registrar_run(
+                clave,
+                p1_parametros(clave, len(train)),
+                metricas,
+                artefactos,
+                modelo,
+                train[cfg.P1_VARIABLES].sample(5, random_state=cfg.SEMILLA).astype({"zona": str}),
+                curva,
+            )
+    comparacion = pd.DataFrame(resumen).T.sort_values("valid_mae").round(4)
+    comparacion.to_csv(cfg.FIGURES_DIR / "p1_comparacion_modelos.csv")
+    logger.info(f"Comparación (ordenada por valid_mae):\n{comparacion.to_string()}")
+    logger.success(f"Mejor modelo por valid_mae: {comparacion.index[0]}")
+    if not registrar:
+        logger.info("Registro en MLflow desactivado (usar --registrar o P1_REGISTRAR_MLFLOW=true)")
 
 
 if __name__ == "__main__":
